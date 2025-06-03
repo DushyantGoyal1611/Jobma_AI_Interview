@@ -1,0 +1,36 @@
+# Core LangChain
+langchain
+langchain-core
+
+# LangChain integrations
+langchain-community
+langchain-google-genai
+
+# LLM Providers
+# Using Gemini(Google) because its free
+google-generativeai
+transformers
+
+# Vector Store & Embedding Utilities
+faiss-cpu
+tiktoken
+
+# Document Loaders
+unstructured  # For UnstructuredWordDocumentLoader (Word, PDFs, etc.)
+python-docx
+
+# Web Search Tool
+duckduckgo-search
+
+# ML & utilities
+numpy
+scikit-learn
+
+# Environment Variable Management
+python-dotenv
+
+# Web App (optional for frontend)
+streamlit
+
+# Report Generation
+reportlab

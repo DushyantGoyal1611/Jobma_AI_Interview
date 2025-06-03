@@ -1,0 +1,11 @@
+# Document
+*.pdf
+*.docx
+
+# Environment Variable
+.env
+
+# Virtual Environment
+venv
+myenv
+env
