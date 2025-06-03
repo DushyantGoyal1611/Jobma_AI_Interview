@@ -1,4 +1,5 @@
 import os
+import re
 import json
 import random
 import warnings
@@ -24,10 +25,11 @@ warnings.filterwarnings('ignore')
 load_dotenv()
 
 # Target Role
-target_role = str(input("Target Role: "))
+target_role = input("Target Role: ").strip()
 
 if not target_role:
-    print("Target Role not given .....")
+    print("Target Role not provided. Exiting .....")
+    exit()
 
 # Question Limit
 # question_limit = int(input("How many Questions you want?: "))
@@ -149,7 +151,7 @@ qna_history = [
     SystemMessage(content="You are an AI Interviewer. Ask one question at a time based on candidate's resume. After the interviewee answers, ask the next one. Keep it conversational.")
 ]
 
-def generate_next_question(chat_history, skills, exp, used_skills):
+def generate_next_question(qna_history, skills, experience, used_skills):
     remaining_skills = [skill for skill in skills if skill not in used_skills]
     
     if not remaining_skills:
@@ -183,32 +185,29 @@ print("Interview Started! \nType 'exit' to quit.")
 counter = 0
 qa_pairs = []
 start_time = datetime.now()
-while True:
-    if counter < question_limit:
-    # Generate and print next question
-        response, skill_used = generate_next_question(qna_history, skills, experience, used_skills)
-        question = response.content.strip()
-        print(f"AI: {question}")
 
-        qna_history.append(AIMessage(content=question))
+while counter < question_limit:
+# Generate and print next question
+    response, skill_used = generate_next_question(qna_history, skills, experience, used_skills)
+    question = response.content.strip()
+    print(f"AI: {question}")
 
-        # Wait for candidate's response
-        interviewee_response = input("You: ")
-        if interviewee_response.lower() == 'exit':
-            print("Interview Ended. \nThank you!")
-            break
-        
-        qna_history.append(HumanMessage(content=interviewee_response))
-        qa_pairs.append({
-            "Question": question,
-            "Answer": interviewee_response,
-            "Skill": skill_used
-        })
-        counter += 1
-    else:
+    qna_history.append(AIMessage(content=question))
+
+    # Wait for candidate's response
+    interviewee_response = input("You: ")
+    if interviewee_response.lower() == 'exit':
         print("Interview Ended. \nThank you!")
-        print("=======================================================================================\n=======================================================================================")
         break
+    
+    qna_history.append(HumanMessage(content=interviewee_response))
+    qa_pairs.append({
+        "Question": question,
+        "Answer": interviewee_response,
+        "Skill": skill_used
+    })
+    counter += 1
+
 end_time = datetime.now()
 time_taken = end_time - start_time
 
@@ -224,22 +223,39 @@ feedback_prompt = f"""
     3. An overall performance summary.
 
     Output in JSON format with:
-    - "Feedback": List of dictionaries with "Question", "Answer", "Skill", "Score", "Comment"
+    - "Feedback": List of {{"Question", "Answer", "Skill", "Score", "Comment"}}
     - "Summary": A short paragraph summarizing the candidate's performance.
 
     Q&A:
     {json.dumps(qa_pairs, indent=2)}
 """
 
+# Extract JSON safely from Gemini
+def extract_json(text):
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        json_match = re.search(r'\{[\s\S]+\}', text)
+        if json_match:
+            return json.loads(json_match.group(0))
+        raise ValueError("Could not extract valid JSON.")
+
 feedback_response = llm.invoke(feedback_prompt)
-feedback_data = json.loads(feedback_response.content)
+try:
+    feedback_data = extract_json(feedback_response.content)
+except Exception as e:
+    print("Invalid JSON from Gemini:\n", feedback_response.content)
+    raise e
+
+# feedback_response = llm.invoke(feedback_prompt)
+# feedback_data = json.loads(feedback_response.content)
 
 # Report Generation
 def generate_pdf_report(feedback_json, time_taken, filename="Interview_Report.pdf"):
     c = canvas.Canvas(filename, pagesize=A4)
     width, height = A4
     y = height - 50
-    
+
     c.setFont("Helvetica-Bold", 14)
     c.drawString(50, y, "Interview Report")
     y -= 30
@@ -247,28 +263,26 @@ def generate_pdf_report(feedback_json, time_taken, filename="Interview_Report.pd
     c.setFont("Helvetica", 12)
     c.drawString(50, y, f"Time Taken: {str(time_taken)}")
     y -= 30
-
     c.drawString(50, y, "Candidate Performance:")
     y -= 20
 
     for item in feedback_json['Feedback']:
-        if y < 100:
+        if y < 120:
             c.showPage()
             y = height - 50
         c.drawString(50, y, f"Skill: {item['Skill']}")
         y -= 20
-        c.drawString(50, y, f"Q: {item['Question']}")
+        c.drawString(50, y, f"Q: {item['Question'][:80]}")
         y -= 20
-        c.drawString(50, y, f"A: {item['Answer']}")
+        c.drawString(50, y, f"A: {item['Answer'][:80]}")
         y -= 20
-        c.drawString(50, y, f"Score: {item['Score']}/10 | Feedback: {item['Comment']}")
+        c.drawString(50, y, f"Score: {item['Score']}/10 | Feedback: {item['Comment'][:80]}")
         y -= 30
 
     c.setFont("Helvetica-Bold", 12)
     c.drawString(50, y, "Summary:")
     y -= 20
     c.setFont("Helvetica", 12)
-    
     for line in feedback_json['Summary'].split('\n'):
         if y < 100:
             c.showPage()
