@@ -5,10 +5,12 @@ import random
 import warnings
 from datetime import datetime
 from dotenv import load_dotenv
+# For User Interface
+import streamlit as st
 # Libraries for Report Generation
 from reportlab.lib.pagesizes import A4
 from reportlab.pdfgen import canvas
-from reportlab.lib.utils import simpleSplit
+from reportlab.lib.utils import ImageReader, simpleSplit
 # LangChain related libraries
 # Gemini
 from langchain_google_genai import ChatGoogleGenerativeAI, GoogleGenerativeAIEmbeddings
@@ -48,7 +50,6 @@ while True:
 
 # Output Parser
 parser = JsonOutputParser()
-question_parser = JsonOutputParser()
 
 # Skills and Experience fetching prompt
 prompt = PromptTemplate(
@@ -254,13 +255,21 @@ except Exception as e:
     raise e
 
 # Report Generation
-def generate_pdf_report(feedback_json, time_taken, filename="Interview_Report.pdf"):
-    # Initialize PDF canvas and setup layout
+def generate_pdf_report(feedback_json, time_taken, filename="Interview_Report.pdf", image_path=None):
     c = canvas.Canvas(filename, pagesize=A4)
     width, height = A4
     y = height - 50
     margin = 50
-    max_width = width - 2 * margin  # usable width
+    max_width = width - 2 * margin
+
+    # Add image at the top-right
+    if image_path:
+        try:
+            img_width = 80
+            img_height = 80
+            c.drawImage(image_path, width - margin - img_width, height - img_height - 20, width=img_width, height=img_height)
+        except Exception as e:
+            print(f"Error loading image: {e}")
 
     # Write the Title and Meta Info
     c.setFont("Helvetica-Bold", 14)
@@ -273,7 +282,6 @@ def generate_pdf_report(feedback_json, time_taken, filename="Interview_Report.pd
     c.drawString(margin, y, "Candidate Performance:")
     y -= 20
 
-    #Define a helper function to draw wrapped text
     def draw_wrapped_text(c, text, fontname, fontsize, x, y, max_width):
         lines = simpleSplit(text, fontname, fontsize, max_width)
         for line in lines:
@@ -285,7 +293,6 @@ def generate_pdf_report(feedback_json, time_taken, filename="Interview_Report.pd
             y -= 16
         return y
 
-    # Loop through each feedback item and add details
     for item in feedback_json['Feedback']:
         if y < 120:
             c.showPage()
@@ -295,12 +302,11 @@ def generate_pdf_report(feedback_json, time_taken, filename="Interview_Report.pd
         c.setFont("Helvetica-Bold", 12)
         y = draw_wrapped_text(c, f"Skill: {item['Skill']}", "Helvetica-Bold", 12, margin, y, max_width)
         c.setFont("Helvetica", 12)
-        y = draw_wrapped_text(c, f"Ques: {item['Question']}", "Helvetica", 12, margin, y, max_width)
-        y = draw_wrapped_text(c, f"Ans: {item['Answer']}", "Helvetica", 12, margin, y, max_width)
+        y = draw_wrapped_text(c, f"Question: {item['Question']}", "Helvetica", 12, margin, y, max_width)
+        y = draw_wrapped_text(c, f"Answer: {item['Answer']}", "Helvetica", 12, margin, y, max_width)
         y = draw_wrapped_text(c, f"Score: {item['Score']}/10 | Feedback: {item['Comment']}", "Helvetica", 12, margin, y, max_width)
         y -= 10
 
-    #Add Summary section at the end
     c.setFont("Helvetica-Bold", 12)
     y = draw_wrapped_text(c, "Summary:", "Helvetica-Bold", 12, margin, y, max_width)
     c.setFont("Helvetica", 12)
@@ -308,5 +314,5 @@ def generate_pdf_report(feedback_json, time_taken, filename="Interview_Report.pd
 
     c.save()
 
-generate_pdf_report(feedback_data, time_taken, filename="test_report1.pdf")
+generate_pdf_report(feedback_data, time_taken, filename="test_report2.pdf", image_path="jobma_logo.png")
 print("PDF Report Generated: Interview_Report.pdf")
