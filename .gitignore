@@ -1,6 +1,7 @@
 # Document
 *.pdf
 *.docx
+*.json
 
 # Environment Variable
 .env
