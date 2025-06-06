@@ -6,10 +6,6 @@ import json
 import warnings
 from datetime import datetime
 from dotenv import load_dotenv
-# Libraries for Report Generation
-from reportlab.lib.pagesizes import A4
-from reportlab.pdfgen import canvas
-from reportlab.lib.utils import simpleSplit
 # LangChain related libraries
 # Gemini
 from langchain_google_genai import ChatGoogleGenerativeAI, GoogleGenerativeAIEmbeddings
@@ -19,19 +15,15 @@ from langchain_community.vectorstores import FAISS
 from langchain_community.document_loaders import PyPDFLoader, UnstructuredWordDocumentLoader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_core.prompts import PromptTemplate
-from langchain_core.output_parsers import JsonOutputParser
-from langchain_core.runnables import RunnableLambda
-# For Sending Mail
-import smtplib
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
+from langchain_core.output_parsers import JsonOutputParser, StrOutputParser
+from langchain_core.runnables import RunnableParallel, RunnablePassthrough, RunnableLambda
+from langchain.agents import Tool, initialize_agent, AgentType
+# Memory
+from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
 
 # Code Starts from here --------------------------------------------->
 warnings.filterwarnings('ignore')
 load_dotenv()
-
-# App Password (Used later for Mail Sending)
-app_password = os.getenv("APP_PASSWORD")
 
 # LLM to be used
 llm = ChatGoogleGenerativeAI(model='gemini-2.0-flash')
@@ -61,7 +53,7 @@ while True:
 parser = JsonOutputParser()
 
 # Skills and Experience fetching prompt
-prompt = PromptTemplate(
+resume_prompt = PromptTemplate(
     template="""
 You are an AI Resume Analyzer. Analyze the resume text below and extract **only** information relevant to the given job role.
 
@@ -163,7 +155,7 @@ def rag_workflow(doc:str, prompt):
 
     return rag_chain
 
-main_chain = rag_workflow("Ashutosh_AI_Engineer.pdf", prompt)
+main_chain = rag_workflow("Ashutosh_AI_Engineer.pdf", resume_prompt)
 
 # Invoking
 resume_result = main_chain.invoke("Extract name, skills, years of experience and mail id from this resume.")
@@ -177,6 +169,7 @@ skills = resume_result.get("Skills", [])
 experience = resume_result.get("Experience", "NA")
 email = resume_result.get("Email", "NA")
 
+# Creating JSON File
 interview_context = {
     "name" : name,
     "target_role" : target_role,
@@ -187,7 +180,22 @@ interview_context = {
     "sender_email" : sender_email
 }
 
-with open("interview_context.json", "w") as f:
-    json.dump(interview_context, f, indent=2)
+json_file = "interview_context.json"
 
-print("Interview context saved to 'interview_context.json'")
+if os.path.exists(json_file):
+    with open(json_file, "r") as f:
+        try:
+            data = json.load(f)
+            if not isinstance(data, list):
+                data = [data]
+        except json.JSONDecodeError:
+            data = []
+else:
+    data = []
+
+data.append(interview_context)
+
+with open(json_file, "w") as f:
+    json.dump(data, f, indent=2)
+
+print(f"Interview context saved to '{json_file}'")

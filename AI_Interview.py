@@ -12,15 +12,9 @@ from reportlab.pdfgen import canvas
 from reportlab.lib.utils import simpleSplit
 # LangChain related libraries
 # Gemini
-from langchain_google_genai import ChatGoogleGenerativeAI, GoogleGenerativeAIEmbeddings
+from langchain_google_genai import ChatGoogleGenerativeAI
 # RAG Libraries
 from langchain_core.tools import tool
-from langchain_community.vectorstores import FAISS
-from langchain_community.document_loaders import PyPDFLoader, UnstructuredWordDocumentLoader
-from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain_core.prompts import PromptTemplate
-from langchain_core.output_parsers import JsonOutputParser
-from langchain_core.runnables import RunnableLambda
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 # For Sending Mail
 import smtplib

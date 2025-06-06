@@ -2,6 +2,7 @@
 *.pdf
 *.docx
 *.json
+formatted_QA.txt
 
 # Environment Variable
 .env
