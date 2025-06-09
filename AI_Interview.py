@@ -25,18 +25,33 @@ from email.mime.multipart import MIMEMultipart
 warnings.filterwarnings('ignore')
 load_dotenv()
 
+# Adding a Authentication Check
+user_id = input("Enter your email id: ").strip()
+applied_role = input("Enter the role you applied for: ").strip()
+
 # Extracting JSON
 with open("interview_context.json", "r") as f:
     interview_context = json.load(f)
 
-# Extracting Necessary Inputs from the JSON
-name = interview_context.get('name', 'NA')
-target_role = interview_context.get('target_role', 'NA')
-skills = interview_context.get("skills", [])
-experience = interview_context.get("experience", "NA")
-email = interview_context.get("email", "NA")
-question_limit = interview_context.get("question_limit", 0)
+# Extracting Necessary Inputs from the JSON and Checking for matching Candidate
+matched_data = None
+for context in interview_context:
+    if context.get('email', '').strip().lower() == user_id.lower() and context.get('target_role', '').strip().lower() == applied_role.lower():
+        matched_data = context
+        break
 
+# Handle if no match found
+if not matched_data:
+    print("You are not scheduled for the interview.\nPlease contact HR.")
+    exit()
+
+name = matched_data.get("name", "NA")
+target_role = matched_data["target_role"]
+skills = matched_data.get("skills", [])
+experience = matched_data.get("experience", "NA")
+email = matched_data["email"]
+question_limit = matched_data.get("question_limit", 0)
+sender_email = matched_data.get("sender_email", "NA")
 
 # App Password (Used later for Mail Sending)
 app_password = os.getenv("APP_PASSWORD")
@@ -260,8 +275,8 @@ def confirmation_mail():
     
     # Prepare email
     msg = MIMEMultipart()
-    sender_email = interview_context['sender_email']
-    msg['From'] = sender_email
+    sender_id = sender_email
+    msg['From'] = sender_id
     msg['To'] = email
     msg['Subject'] = subject
     msg.attach(MIMEText(body, 'plain'))
@@ -270,7 +285,7 @@ def confirmation_mail():
     try:
         server = smtplib.SMTP('smtp.gmail.com', 587)
         server.starttls()
-        server.login(sender_email, app_password)
+        server.login(sender_id, app_password)
         server.send_message(msg)
         server.quit()
         return f"Candidate passed with {score_percentage:.2f}% score. Confirmation mail sent to {email}."

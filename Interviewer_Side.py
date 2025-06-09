@@ -9,7 +9,7 @@ from dotenv import load_dotenv
 from langchain_google_genai import ChatGoogleGenerativeAI, GoogleGenerativeAIEmbeddings
 # RAG Libraries
 from pydantic import BaseModel, Field
-from langchain_core.tools import tool
+from langchain_core.tools import tool, StructuredTool
 from langchain_community.vectorstores import FAISS
 from langchain_community.document_loaders import PyPDFLoader, UnstructuredWordDocumentLoader, TextLoader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
@@ -96,7 +96,7 @@ def extract_document(file_path):
     return []
 
 # RAG WorkFlow
-def create_rag_chain(doc, prompt, parser):
+def create_rag_chain(doc, prompt, parser, resume_text=False):
     # Document Loader
     docs = extract_document(doc)
     if not docs:
@@ -119,6 +119,8 @@ def create_rag_chain(doc, prompt, parser):
     })
 
     main_chain = parallel_chain | prompt | llm | parser
+    if resume_text:
+        return main_chain, "\n\n".join([doc.page_content for doc in docs])
     return main_chain
 
 # Skills and Experience fetching prompt and JSON Parser
@@ -170,11 +172,67 @@ Your output **must** be in the following JSON format:
     partial_variables={
         "format_instruction": resume_parser.get_format_instructions(),
         "current_month_year": current_month_year
-        }
+    }
 )
 
-@tool(args_schema=ScheduleInterviewInput)
-def schedule_interview(role:str, resume_path:str, question_limit:int, sender_email:str) -> str:
+# def schedule_interview(role:str|dict, resume_path:str, question_limit:int, sender_email:str) -> str:
+#     """
+#     Schedules interview by extracting details from resume and saving context to JSON.
+#     Args:
+#         role: Target role
+#         resume_path: Path to the candidate's resume file
+#         question_limit: Number of questions to generate
+#         sender_email: Sender's email
+#     Returns:
+#         Confirmation string
+#     """
+#     if not isinstance(resume_path, str):
+#         raise ValueError("resume_path must be a valid string")
+
+#     if not os.path.isfile(resume_path):
+#         raise FileNotFoundError(f"Resume file not found at path: {resume_path}")
+
+#     if isinstance(role, dict):
+#         role = role.get("title", "")
+#         if not role:
+#             role = str(role) 
+    
+#     if not isinstance(role, str) or not role.strip():
+#         raise ValueError("Role must be a non-empty string")
+
+#     resume_chain, resume_text = create_rag_chain(resume_path, resume_prompt, resume_parser, resume_text=True)
+#     resume_result = resume_chain.invoke({'context':resume_text, 'role':role})
+
+#     interview_context = {
+#         "name": resume_result.get("Name", "NA"),
+#         "target_role": role,
+#         "skills": resume_result.get("Skills", []),
+#         "experience": resume_result.get("Experience", "NA"),
+#         "email": resume_result.get("Email", "NA"),
+#         "question_limit": question_limit,
+#         "sender_email": sender_email
+#     }
+
+#     json_file = "interview_context.json"
+#     data = []
+
+#     if os.path.exists(json_file):
+#         try:
+#             with open(json_file, "r") as f:
+#                 data = json.load(f)
+#                 if not isinstance(data, list):
+#                     data = [data]
+#         except json.JSONDecodeError:
+#             data = []
+
+#     data.append(interview_context)
+
+#     with open(json_file, "w") as f:
+#         json.dump(data, f, indent=2)
+
+#     return f"Interview scheduled successfully and saved to '{json_file}'."
+
+def schedule_interview(role:str|dict, resume_path:str, question_limit:int, sender_email:str) -> str:
     """
     Schedules interview by extracting details from resume and saving context to JSON.
     Args:
@@ -185,8 +243,23 @@ def schedule_interview(role:str, resume_path:str, question_limit:int, sender_ema
     Returns:
         Confirmation string
     """
-    resume_chain = create_rag_chain(resume_path, resume_prompt, resume_parser)
-    resume_result = resume_chain.invoke("Extract name, skills, years of experience and mail id from this resume.")
+    if not isinstance(resume_path, str):
+        raise ValueError("resume_path must be a valid string")
+
+    if not os.path.isfile(resume_path):
+        raise FileNotFoundError(f"Resume file not found at path: {resume_path}")
+
+    if isinstance(role, dict):
+        role = role.get("title", "")
+        if not role:
+            role = str(role) 
+    
+    if not isinstance(role, str) or not role.strip():
+        raise ValueError("Role must be a non-empty string")
+
+    # Create the chain with JsonOutputParser instead of StrOutputParser
+    resume_chain = resume_prompt | llm | resume_parser
+    resume_result = resume_chain.invoke({'context': extract_document(resume_path), 'role': role})
 
     interview_context = {
         "name": resume_result.get("Name", "NA"),
@@ -218,13 +291,12 @@ def schedule_interview(role:str, resume_path:str, question_limit:int, sender_ema
     return f"Interview scheduled successfully and saved to '{json_file}'."
 
 # Agent
-# interview_tool = Tool(
-#     name = 'schedule_interview',
-#     func = schedule_interview,
-#     description="Extracts resume information and schedules an interview. Requires: name, role, resume_path, question_limit, sender_email",
-#     args_schema=ScheduleInterviewInput
-# )
-interview_tool = schedule_interview
+interview_tool = StructuredTool.from_function(
+    schedule_interview,
+    args_schema=ScheduleInterviewInput,
+    name="schedule_interview",
+    description="Extracts resume information and schedules interview"
+)
 
 # The Chatbot
 def ask_ai():
@@ -239,44 +311,64 @@ def ask_ai():
         verbose=True
     )
 
+    fallback_triggers = r"(insufficient|not (sure|enough|understand)|i don't know|no context)"
+
     while True:
         user_input = input("You: ")
-        if user_input.lower() == 'exit':
+        if user_input.lower() in ['exit', 'quit']:
+            print("Exiting Chat.\nGoodbye!")
             break
-        elif "schedule interview" in user_input.lower():
-            print("Agent: Handling Interview Scheduling... ")
-            try:
-                target_role = input("Target Role: ")
-                resume_path = input("Resume File Path: ")
-                question_limit = int(input("Question Limit: "))
-                sender_email = input("Sender Email: ")
-                response = agent.run(f"Schedule Interview with role: {target_role}, resume_path: {resume_path}, question_limit: {question_limit}, sender_email: {sender_email}")
-                print("Agent: ", response)
-            except Exception as e:
-                print(f"Error Scheduling Interview: {e}")
-        else:
-            response = chain.invoke(user_input).strip()
 
-        if response == "INSUFFICIENT CONTEXT":
-            print("Fallback Triggered: Using LLM due to insufficient context... ")
+        if user_input.lower().startswith("schedule interview"):
+            print("Invoking Interview Scheduler Agent...")
+            try:
+                role = input("Enter Target role: ").strip()
+                resume_path = input("Enter resume file path: ").strip()
+                if not os.path.exists(resume_path):
+                    print(f"Error: File not found at {resume_path}")
+                    continue
+                question_limit = int(input("How many questions to generate? "))
+                sender_email = input("Enter sender's email: ").strip()
+
+                tool_input = {
+                    "role": role,
+                    "resume_path": resume_path,
+                    "question_limit": question_limit,
+                    "sender_email": sender_email
+                }
+                response = interview_tool.invoke(tool_input)
+                print("AI (Agent):", response)
+
+            except Exception as e:
+                print("Error during Scheduling:", str(e))
+                continue
+        
+        if chain:
+            response = chain.invoke(user_input)
+        else:
+            response = "I don't have access to the knowledge base. Please ask general questions or schedule an interview."
+
+        if re.search(fallback_triggers, response, re.IGNORECASE):
+            print("Fallback Triggered: Using AI for external info... ")
             chat_history.append(HumanMessage(content=user_input))
             final_response = llm.invoke(chat_history)
+
             chat_history.append(final_response)
             print(f"AI (Fallback): {final_response.content}")
-
-        elif response == "SORRY: This question is irrelevant.":
-            print("AI: SORRY: This question is irrelevant.")
-            chat_history.append(HumanMessage(content=user_input))
-            chat_history.append(AIMessage(content=response))
-
         else:
-            print(f"AI: {response}")
             chat_history.append(HumanMessage(content=user_input))
             chat_history.append(AIMessage(content=response))
+            print(f"AI: {response}")
 
     # Chat History
     print("\n--- Chat History ---")
     for chat in chat_history:
-        print(chat.content)
+        if isinstance(chat, HumanMessage):
+            role = "User"
+        elif isinstance(chat, AIMessage):
+            role = "AI"
+        else:
+            role = "System"
+        print(f"{role}: {chat.content}")
 
 ask_ai()

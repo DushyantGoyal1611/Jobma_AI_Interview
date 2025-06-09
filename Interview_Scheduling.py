@@ -10,9 +10,10 @@ from dotenv import load_dotenv
 # Gemini
 from langchain_google_genai import ChatGoogleGenerativeAI, GoogleGenerativeAIEmbeddings
 # RAG Libraries
-from langchain_core.tools import tool
+from pydantic import BaseModel, Field
+from langchain_core.tools import tool, StructuredTool
 from langchain_community.vectorstores import FAISS
-from langchain_community.document_loaders import PyPDFLoader, UnstructuredWordDocumentLoader
+from langchain_community.document_loaders import PyPDFLoader, UnstructuredWordDocumentLoader, TextLoader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_core.prompts import PromptTemplate
 from langchain_core.output_parsers import JsonOutputParser, StrOutputParser
@@ -25,34 +26,108 @@ from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
 warnings.filterwarnings('ignore')
 load_dotenv()
 
-# LLM to be used
-llm = ChatGoogleGenerativeAI(model='gemini-2.0-flash')
+class ScheduleInterviewInput(BaseModel):
+    role:str = Field(description="Target Job Role")
+    resume_path:str = Field(description="Path to resume file (PDF/DOCX/TXT)")
+    question_limit:int = Field(description="Number of interview questions to generate")
+    sender_email: str = Field(description="Sender's email address")
 
 # For Current Day
 current_month_year = datetime.now().strftime("%B %Y")
 
-# Target Role
-target_role = input("Target Role: ").strip()
+# Model
+llm = ChatGoogleGenerativeAI(model='gemini-2.0-flash')
 
-if not target_role:
-    print("Target Role not provided. Exiting .....")
-    exit()
+# Parser
+parser = StrOutputParser()
 
-# Question Limit
-while True:
+# Prompt
+prompt = PromptTemplate(
+    template="""
+You are an intelligent assistant that only answers questions based on the provided document content.
+
+The document may include:
+- Headings, paragraphs, subheadings
+- Lists or bullet points
+- Tables or structured data
+- Text from PDF, DOCX, or TXT formats
+
+Your responsibilities:
+1. Use ONLY the content in the document to answer.
+2. If the question is clearly related to the document topic but the content is insufficient, respond with: INSUFFICIENT CONTEXT.
+3. If the question is completely unrelated to the document, respond with: SORRY: This question is irrelevant.
+4. If the user greets (e.g., "hi", "hello"), respond with a friendly greeting.
+5. Otherwise, provide a concise and accurate answer using only the document content.
+
+Document Content:
+{context}
+
+User Question:
+{question}
+
+Answer:
+""",
+    input_variables=["context", "question"]
+)
+
+
+# Document Loader
+def extract_document(file_path):
     try:
-        question_limit = int(input("How many Questions you want?: "))
-        if question_limit > 0:
-            break
+        ext = os.path.splitext(file_path)[-1].lower()
+
+        if ext == '.pdf':
+            loader = PyPDFLoader(file_path)
+        elif ext == '.docx':
+            loader = UnstructuredWordDocumentLoader(file_path)
+        elif ext == '.txt':
+            loader = TextLoader(file_path, encoding="utf-8")
         else:
-            print("Please enter a number greater than 0.")
-    except ValueError:
-        print("Invalid input. Please enter a valid integer.")
+            raise ValueError("Unsupported file format. Please upload a PDF, DOCX or TXT file.")
 
-# Output Parser
-parser = JsonOutputParser()
+        docs = loader.load()
+        print(f'Loading {file_path} ......')
+        print('Loading Successful')
+        return docs
 
-# Skills and Experience fetching prompt
+    except FileNotFoundError as fe:
+        print(f"File not found: {fe}")
+    except Exception as e:
+        print(f"Error loading document: {e}")
+    
+    return []
+
+# RAG WorkFlow
+def create_rag_chain(doc, prompt, parser, resume_text=False):
+    # Document Loader
+    docs = extract_document(doc)
+    if not docs:
+        raise ValueError("Document could not be loaded.")
+    # Text Splitter
+    splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=100)
+    chunks = splitter.split_documents(docs)
+    # Model Embeddings and Vector Store
+    embedding_model = GoogleGenerativeAIEmbeddings(model='models/embedding-001')
+    vector_store = FAISS.from_documents(chunks, embedding_model)
+    # Retriever
+    retriever = vector_store.as_retriever(search_type='similarity', search_kwargs={'k':4})
+
+    def format_docs(retrieved_docs):
+        return "\n\n".join([doc.page_content for doc in retrieved_docs])
+    
+    parallel_chain = RunnableParallel({
+        'context': retriever | RunnableLambda(format_docs),
+        'question': RunnablePassthrough()    
+    })
+
+    main_chain = parallel_chain | prompt | llm | parser
+    if resume_text:
+        return main_chain, "\n\n".join([doc.page_content for doc in docs])
+    return main_chain
+
+# Skills and Experience fetching prompt and JSON Parser
+resume_parser = JsonOutputParser()
+
 resume_prompt = PromptTemplate(
     template="""
 You are an AI Resume Analyzer. Analyze the resume text below and extract **only** information relevant to the given job role.
@@ -65,7 +140,7 @@ Your output **must** be in the following JSON format:
    - Extract the candidate's full name from the **first few lines** of the resume.
    - It is usually the **first large bold text** or line that is **not an address, email, or phone number**.
    - Exclude words like "Resume", "Curriculum Vitae", "AI", or job titles.
-   - If the name appears to be broken across lines, reconstruct it (e.g., "Dushy" and "ant" should be "Dushyant").
+   - If the name appears to be broken across lines, reconstruct it (e.g., "Abhis" and "hek" should be "Abhishek").
    - If no clear name is found, return: `"Name": "NA"`.
 
 2. **Skills**:
@@ -97,105 +172,148 @@ Your output **must** be in the following JSON format:
 """,
     input_variables=["context", "role"],
     partial_variables={
-        "format_instruction": parser.get_format_instructions(),
+        "format_instruction": resume_parser.get_format_instructions(),
         "current_month_year": current_month_year
-        }
+    }
 )
 
-def extract_document(file_path):
-    try:
-        ext = os.path.splitext(file_path)[-1].lower()
+def schedule_interview(role:str|dict, resume_path:str, question_limit:int, sender_email:str) -> str:
+    """
+    Schedules interview by extracting details from resume and saving context to JSON.
+    Args:
+        role: Target role
+        resume_path: Path to the candidate's resume file
+        question_limit: Number of questions to generate
+        sender_email: Sender's email
+    Returns:
+        Confirmation string
+    """
+    if not isinstance(resume_path, str):
+        raise ValueError("resume_path must be a valid string")
 
-        if ext == '.pdf':
-            loader = PyPDFLoader(file_path)
-        elif ext == '.docx':
-            loader = UnstructuredWordDocumentLoader(file_path)
-        else:
-            raise ValueError("Unsupported file format. Please upload a PDF or DOCX file.")
+    if not os.path.isfile(resume_path):
+        raise FileNotFoundError(f"Resume file not found at path: {resume_path}")
 
-        docs = loader.load_and_split()
-        print(f'Loading {file_path} ......')
-        print('Loading Successful')
-        return docs
-    except FileNotFoundError as fe:
-        print(f'File not Found: {fe}')
-    except Exception as e:
-        print(f"Error loading document: {e}")
-
-    return []
-
-def rag_workflow(doc:str, prompt):
-    # Document Loader
-    docs = extract_document(doc)
-    if not docs:
-        raise ValueError("Error in Document Loading ....")
+    if isinstance(role, dict):
+        role = role.get("title", "")
+        if not role:
+            role = str(role) 
     
-    # Text Splitter
-    splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=100)
-    chunks = splitter.split_documents(docs)
+    if not isinstance(role, str) or not role.strip():
+        raise ValueError("Role must be a non-empty string")
 
-    # Embedding Model and Vector Store
-    embedding_model = GoogleGenerativeAIEmbeddings(model='models/embedding-001')
-    vector_store = FAISS.from_documents(chunks, embedding_model)
+    # Create the chain with JsonOutputParser instead of StrOutputParser
+    resume_chain = resume_prompt | llm | resume_parser
+    resume_result = resume_chain.invoke({'context': extract_document(resume_path), 'role': role})
 
-    # Retriever
-    retriever = vector_store.as_retriever(search_type='similarity', search_kwargs={'k':4})
+    interview_context = {
+        "name": resume_result.get("Name", "NA"),
+        "target_role": role,
+        "skills": resume_result.get("Skills", []),
+        "experience": resume_result.get("Experience", "NA"),
+        "email": resume_result.get("Email", "NA"),
+        "question_limit": question_limit,
+        "sender_email": sender_email
+    }
 
-    def format_docs(retrieved_docs):
-        return "\n\n".join(doc.page_content for doc in retrieved_docs)
-    
-    rag_chain = (
-        {"context": retriever | RunnableLambda(format_docs),
-        "role": lambda _: target_role 
-        }
-        | prompt
-        | llm
-        | parser
-    )
-
-    return rag_chain
-
-main_chain = rag_workflow("Ashutosh_AI_Engineer.pdf", resume_prompt)
-
-# Invoking
-resume_result = main_chain.invoke("Extract name, skills, years of experience and mail id from this resume.")
-print("Extracted: ",resume_result)
-
-sender_email = str(input("Enter Sender's Email ID: "))
-
-# Skills, Experience and Email Id
-name = resume_result.get("Name", "NA")
-skills = resume_result.get("Skills", [])
-experience = resume_result.get("Experience", "NA")
-email = resume_result.get("Email", "NA")
-
-# Creating JSON File
-interview_context = {
-    "name" : name,
-    "target_role" : target_role,
-    "skills" : skills,
-    "experience" : experience,
-    "email" : email,
-    "question_limit" : question_limit,
-    "sender_email" : sender_email
-}
-
-json_file = "interview_context.json"
-
-if os.path.exists(json_file):
-    with open(json_file, "r") as f:
-        try:
-            data = json.load(f)
-            if not isinstance(data, list):
-                data = [data]
-        except json.JSONDecodeError:
-            data = []
-else:
+    json_file = "interview_context.json"
     data = []
 
-data.append(interview_context)
+    if os.path.exists(json_file):
+        try:
+            with open(json_file, "r") as f:
+                data = json.load(f)
+                if not isinstance(data, list):
+                    data = [data]
+        except json.JSONDecodeError:
+            data = []
 
-with open(json_file, "w") as f:
-    json.dump(data, f, indent=2)
+    data.append(interview_context)
 
-print(f"Interview context saved to '{json_file}'")
+    with open(json_file, "w") as f:
+        json.dump(data, f, indent=2)
+
+    return f"Interview scheduled successfully and saved to '{json_file}'."
+
+# Agent
+interview_tool = StructuredTool.from_function(
+    schedule_interview,
+    args_schema=ScheduleInterviewInput,
+    name="schedule_interview",
+    description="Extracts resume information and schedules interview"
+)
+
+# The Chatbot
+def ask_ai():
+    chat_history = [SystemMessage(content="You are a helpful AI Assistant")]
+    chain = create_rag_chain('formatted_QA.txt', prompt, parser)
+
+    tools = [interview_tool]
+    agent = initialize_agent(
+        tools=tools,
+        llm=llm,
+        agent=AgentType.STRUCTURED_CHAT_ZERO_SHOT_REACT_DESCRIPTION,
+        verbose=True
+    )
+
+    fallback_triggers = r"(insufficient|not (sure|enough|understand)|i don't know|no context)"
+
+    while True:
+        user_input = input("You: ")
+        if user_input.lower() in ['exit', 'quit']:
+            print("Exiting Chat.\nGoodbye!")
+            break
+
+        if user_input.lower().startswith("schedule interview"):
+            print("Invoking Interview Scheduler Agent...")
+            try:
+                role = input("Enter Target role: ").strip()
+                resume_path = input("Enter resume file path: ").strip()
+                if not os.path.exists(resume_path):
+                    print(f"Error: File not found at {resume_path}")
+                    continue
+                question_limit = int(input("How many questions to generate? "))
+                sender_email = input("Enter sender's email: ").strip()
+
+                tool_input = {
+                    "role": role,
+                    "resume_path": resume_path,
+                    "question_limit": question_limit,
+                    "sender_email": sender_email
+                }
+                response = interview_tool.invoke(tool_input)
+                print("AI (Agent):", response)
+
+            except Exception as e:
+                print("Error during Scheduling:", str(e))
+                continue
+        
+        if chain:
+            response = chain.invoke(user_input)
+        else:
+            response = "I don't have access to the knowledge base. Please ask general questions or schedule an interview."
+
+        if re.search(fallback_triggers, response, re.IGNORECASE):
+            print("Fallback Triggered: Using AI for external info... ")
+            chat_history.append(HumanMessage(content=user_input))
+            final_response = llm.invoke(chat_history)
+
+            chat_history.append(final_response)
+            print(f"AI (Fallback): {final_response.content}")
+        else:
+            chat_history.append(HumanMessage(content=user_input))
+            chat_history.append(AIMessage(content=response))
+            print(f"AI: {response}")
+
+    # Chat History
+    print("\n--- Chat History ---")
+    for chat in chat_history:
+        if isinstance(chat, HumanMessage):
+            role = "User"
+        elif isinstance(chat, AIMessage):
+            role = "AI"
+        else:
+            role = "System"
+        print(f"{role}: {chat.content}")
+
+ask_ai()
