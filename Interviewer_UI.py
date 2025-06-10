@@ -4,6 +4,7 @@ import os
 import re
 import json
 import warnings
+import streamlit as st
 from datetime import datetime
 from dotenv import load_dotenv
 # LangChain related libraries
@@ -25,6 +26,10 @@ from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
 # Code Starts from here --------------------------------------------->
 warnings.filterwarnings('ignore')
 load_dotenv()
+
+# Streamlit for User Interface
+st.set_page_config(page_title="AI Interview Assistant", layout="centered")
+st.title("AI Interview Assistant")
 
 # Pydantic Model
 class ScheduleInterviewInput(BaseModel):
@@ -87,14 +92,14 @@ def extract_document(file_path):
             raise ValueError("Unsupported file format. Please upload a PDF, DOCX or TXT file.")
 
         docs = loader.load()
-        print(f'Loading {file_path} ......')
-        print('Loading Successful')
+        st.write(f'Loading {file_path} ......')
+        st.write('Loading Successful')
         return docs
 
     except FileNotFoundError as fe:
-        print(f"File not found: {fe}")
+        st.error(f"File not found: {fe}")
     except Exception as e:
-        print(f"Error loading document: {e}")
+        st.error(f"Error loading document: {e}")
     
     return []
 
@@ -245,10 +250,37 @@ interview_tool = StructuredTool.from_function(
 )
 
 # The Chatbot
-def ask_ai():
-    chat_history = [SystemMessage(content="You are a helpful AI Assistant")]
-    chain = create_rag_chain('formatted_QA.txt', prompt, parser)
+# In the ask_ai() function, replace the relevant sections with:
 
+def ask_ai():
+    st.subheader("Ask the AI or Schedule an Interview")
+
+    # Initialize session state for chat history
+    if "chat_history" not in st.session_state:
+        st.session_state.chat_history = []
+
+    # Initialize document chain as None
+    chain = None
+    
+    # Document upload section
+    uploaded_file = st.file_uploader("Upload Document", type=["pdf", "docx", "txt"])
+    if uploaded_file is not None:
+        # Save the uploaded file temporarily
+        temp_dir = "temp_uploads"
+        os.makedirs(temp_dir, exist_ok=True)
+        file_path = os.path.join(temp_dir, uploaded_file.name)
+        
+        with open(file_path, "wb") as f:
+            f.write(uploaded_file.getbuffer())
+        
+        st.success(f"Uploaded file: {uploaded_file.name}")
+        try:
+            chain = create_rag_chain(file_path, prompt, parser)
+        except Exception as e:
+            st.error(f"Error creating RAG chain: {str(e)}")
+            chain = None
+
+    # Agent tool setup
     tools = [interview_tool]
     agent = initialize_agent(
         tools=tools,
@@ -259,62 +291,69 @@ def ask_ai():
 
     fallback_triggers = r"(insufficient|not (sure|enough|understand)|i don't know|no context)"
 
-    while True:
-        user_input = input("You: ")
-        if user_input.lower() in ['exit', 'quit']:
-            print("Exiting Chat.\nGoodbye!")
-            break
+    # User Input Area
+    user_input = st.text_input("You:", placeholder="Type your question or 'schedule interview'")
+    
+    if user_input:
+        if user_input.lower() == "schedule interview":
+            st.info("Fill the form below to schedule an interview:")
+            with st.form("interview_form"):
+                role = st.text_input("Target Role")
+                uploaded_resume = st.file_uploader("Upload Resume", type=["pdf", "docx", "txt"])
+                question_limit = st.number_input("Number of Questions", min_value=1, value=5)
+                sender_email = st.text_input("Sender Email")
 
-        if user_input.lower().startswith("schedule interview"):
-            print("Invoking Interview Scheduler Agent...")
-            try:
-                role = input("Enter Target role: ").strip()
-                resume_path = input("Enter resume file path: ").strip()
-                if not os.path.exists(resume_path):
-                    print(f"Error: File not found at {resume_path}")
-                    continue
-                question_limit = int(input("How many questions to generate? "))
-                sender_email = input("Enter sender's email: ").strip()
+                submit = st.form_submit_button("Schedule")
 
-                tool_input = {
-                    "role": role,
-                    "resume_path": resume_path,
-                    "question_limit": question_limit,
-                    "sender_email": sender_email
-                }
-                response = interview_tool.invoke(tool_input)
-                print("AI (Agent):", response)
+                if submit and uploaded_resume is not None:
+                    # Save the uploaded resume temporarily
+                    temp_resume_path = os.path.join("temp_uploads", uploaded_resume.name)
+                    with open(temp_resume_path, "wb") as f:
+                        f.write(uploaded_resume.getbuffer())
+                    
+                    try:
+                        response = schedule_interview(
+                            role=role,
+                            resume_path=temp_resume_path,
+                            question_limit=question_limit,
+                            sender_email=sender_email
+                        )
+                        st.success(f"AI (Agent): {response}")
+                        st.session_state.chat_history.append(f"User: schedule interview for {role}")
+                        st.session_state.chat_history.append(f"AI: {response}")
+                    except Exception as e:
+                        st.error(f"Error during Scheduling: {str(e)}")
+                elif submit and uploaded_resume is None:
+                    st.error("Please upload a resume file")
 
-            except Exception as e:
-                print("Error during Scheduling:", str(e))
-                continue
-        
-        if chain:
-            response = chain.invoke(user_input)
         else:
-            response = "I don't have access to the knowledge base. Please ask general questions or schedule an interview."
+            if chain:
+                try:
+                    response = chain.invoke(user_input)
+                except Exception as e:
+                    response = f"Error processing your question: {str(e)}"
+            else:
+                response = "I don't have access to the knowledge base. Please ask general questions or schedule an interview."
 
-        if re.search(fallback_triggers, response, re.IGNORECASE):
-            print("Fallback Triggered: Using AI for external info... ")
-            chat_history.append(HumanMessage(content=user_input))
-            final_response = llm.invoke(chat_history)
+            if re.search(fallback_triggers, response, re.IGNORECASE):
+                st.write("Fallback Triggered: Using AI for external info... ")
+                messages = [HumanMessage(content=user_input)]
+                final_response = llm.invoke(messages)
+                response = final_response.content
+                
+            st.session_state.chat_history.append(f"User: {user_input}")
+            st.session_state.chat_history.append(f"AI: {response}")
+            st.write(f"AI: {response}")
 
-            chat_history.append(final_response)
-            print(f"AI (Fallback): {final_response.content}")
+    # Display chat history
+    st.markdown("---")
+    st.subheader("Chat History")
+    for msg in st.session_state.chat_history:
+        # Split into role and content if needed
+        if isinstance(msg, str) and ":" in msg:
+            role, content = msg.split(":", 1)
+            st.markdown(f"**{role.strip()}:** {content.strip()}")
         else:
-            chat_history.append(HumanMessage(content=user_input))
-            chat_history.append(AIMessage(content=response))
-            print(f"AI: {response}")
-
-    # Chat History
-    print("\n--- Chat History ---")
-    for chat in chat_history:
-        if isinstance(chat, HumanMessage):
-            role = "User"
-        elif isinstance(chat, AIMessage):
-            role = "AI"
-        else:
-            role = "System"
-        print(f"{role}: {chat.content}")
+            st.markdown(str(msg))
 
 ask_ai()
