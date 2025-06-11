@@ -15,12 +15,12 @@ from langchain_core.tools import StructuredTool
 from langchain_community.vectorstores import FAISS
 from langchain_community.document_loaders import PyPDFLoader, UnstructuredWordDocumentLoader, TextLoader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain_core.prompts import PromptTemplate
+from langchain_core.prompts import PromptTemplate, ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.output_parsers import JsonOutputParser, StrOutputParser
 from langchain_core.runnables import RunnableParallel, RunnablePassthrough, RunnableLambda
 from langchain.agents import initialize_agent, AgentType
 # Memory
-from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
+from langchain.memory import ConversationBufferMemory
 
 # Code Starts from here --------------------------------------------->
 warnings.filterwarnings('ignore')
@@ -237,27 +237,141 @@ def schedule_interview(role:str|dict, resume_path:str, question_limit:int, sende
     return f"Interview scheduled successfully and saved to '{json_file}'."
 
 # Agent
-interview_tool = StructuredTool.from_function(
-    schedule_interview,
-    args_schema=ScheduleInterviewInput,
-    name="schedule_interview",
-    description="Extracts resume information and schedules interview"
-)
+# interview_tool = StructuredTool.from_function(
+#     schedule_interview,
+#     args_schema=ScheduleInterviewInput,
+#     name="schedule_interview",
+#     description="""Useful for when you need to schedule or setup a job interview. 
+#     Input should include: 
+#     - role (job title like 'Python Developer'), 
+#     - resume_path (file path to candidate resume),
+#     - question_limit (number of questions needed),
+#     - sender_email (email of HR contact)"""
+# )
 
 # The Chatbot
+# def ask_ai():
+#     # Memory
+#     memory = ConversationBufferMemory(k=20, return_messages=True) # K means total messages, not total exchange
+
+#     # AI Agent
+#     tools = [interview_tool]
+#     agent = initialize_agent(
+#         tools=tools,
+#         llm=llm,
+#         agent=AgentType.STRUCTURED_CHAT_ZERO_SHOT_REACT_DESCRIPTION,
+#         verbose=False,
+#         memory=memory,
+#         handling_parsing_errors=True
+#     )
+
+#     chain = create_rag_chain('formatted_QA.txt', prompt, parser)
+
+#     # Create a prompt template that includes memory
+#     conversational_prompt = ChatPromptTemplate.from_messages([
+#         ("system", "You are a helpful AI Assistant. Answer questions based on the document when possible"),
+#         MessagesPlaceholder(variable_name="history"),
+#         ("human", "{input}")        
+#     ])
+
+#     fallback_chain = conversational_prompt | llm | parser
+#     fallback_triggers = r"(insufficient|not (sure|enough|understand)|i don't know|no context)"
+
+#     while True:
+#         user_input = input("You: ")
+#         if user_input.lower() in ['exit', 'quit']:
+#             print("Exiting Chat.\nGoodbye!")
+#             break
+
+#         if user_input.lower().startswith("schedule interview"):
+#             print("Invoking Interview Scheduler Agent...")
+#             try:
+#                 role = input("Enter Target role: ").strip()
+#                 resume_path = input("Enter resume file path: ").strip()
+#                 if not os.path.exists(resume_path):
+#                     print(f"Error: File not found at {resume_path}")
+#                     continue
+#                 question_limit = int(input("How many questions to generate? "))
+#                 sender_email = input("Enter sender's email: ").strip()
+
+#                 tool_input = {
+#                     "role": role,
+#                     "resume_path": resume_path,
+#                     "question_limit": question_limit,
+#                     "sender_email": sender_email
+#                 }
+#                 response = interview_tool.invoke(tool_input)
+#                 print("AI (Agent):", response)
+#                 memory.chat_memory.add_user_message(user_input)
+#                 memory.chat_memory.add_ai_message(response)
+
+#             except Exception as e:
+#                 print("Error during Scheduling:", str(e))
+#                 continue
+        
+#         if chain:
+#             response = chain.invoke(user_input)
+#         else:
+#             response = "I don't have access to the knowledge base. Please ask general questions or schedule an interview."
+
+#         if re.search(fallback_triggers, response, re.IGNORECASE):
+#             print("Fallback Triggered: Using AI for external info... ")
+#             inputs = {"input": user_input, "history": memory.buffer}
+#             final_response = fallback_chain.invoke(inputs)
+
+#             memory.chat_memory.add_user_message(user_input)
+#             memory.chat_memory.add_ai_message(final_response)
+#             print(f"AI (Fallback): {final_response}")
+#         else:
+#             memory.chat_memory.add_user_message(user_input)
+#             memory.chat_memory.add_ai_message(response)
+#             print(f"AI: {response}")
+
+#     # Chat History
+#     print("\n---- Chat History ----")
+#     for message in memory.chat_memory.messages:
+#         if message.type == 'human':
+#             role = "User"
+#         else:
+#             role = "AI"
+#         print(f"{role}: {message.content}")
+
 def ask_ai():
-    chat_history = [SystemMessage(content="You are a helpful AI Assistant")]
+    # Initialize memory
+    memory = ConversationBufferMemory(return_messages=True)
+    
+    # Initialize the RAG chain
     chain = create_rag_chain('formatted_QA.txt', prompt, parser)
 
-    # tools = [interview_tool]
-    # agent = initialize_agent(
-    #     tools=tools,
-    #     llm=llm,
-    #     agent=AgentType.STRUCTURED_CHAT_ZERO_SHOT_REACT_DESCRIPTION,
-    #     verbose=True
-    # )
-
-    fallback_triggers = r"(insufficient|not (sure|enough|understand)|i don't know|no context)"
+    # Tool for scheduling interview
+    interview_tool = StructuredTool.from_function(
+        func=schedule_interview,
+        name="interview_scheduler",
+        description="""USE THIS FOR:
+        - Scheduling interviews
+        - Setting up interview questions
+        - Arranging candidate evaluations
+        REQUIRES: role, resume_path, question_limit, sender_email""",
+        args_schema=ScheduleInterviewInput
+    )
+    
+    # Agent with tools and memory
+    agent = initialize_agent(
+        tools=[interview_tool],
+        llm=llm,
+        agent=AgentType.STRUCTURED_CHAT_ZERO_SHOT_REACT_DESCRIPTION,
+        memory=memory,
+        verbose=True,
+        handle_parsing_errors=True
+    )
+    
+    # Create a fallback chain that uses memory
+    fallback_prompt = ChatPromptTemplate.from_messages([
+        ("system", "Answer general questions helpfully"),
+        MessagesPlaceholder(variable_name="chat_history"),
+        ("human", "{input}")
+    ])
+    fallback_chain = fallback_prompt | llm | parser
 
     while True:
         user_input = input("You: ")
@@ -265,57 +379,35 @@ def ask_ai():
             print("Exiting Chat.\nGoodbye!")
             break
 
-        if user_input.lower().startswith("schedule interview"):
-            print("Invoking Interview Scheduler Agent...")
-            try:
-                role = input("Enter Target role: ").strip()
-                resume_path = input("Enter resume file path: ").strip()
-                if not os.path.exists(resume_path):
-                    print(f"Error: File not found at {resume_path}")
-                    continue
-                question_limit = int(input("How many questions to generate? "))
-                sender_email = input("Enter sender's email: ").strip()
-
-                tool_input = {
-                    "role": role,
-                    "resume_path": resume_path,
-                    "question_limit": question_limit,
-                    "sender_email": sender_email
-                }
-                response = interview_tool.invoke(tool_input)
-                print("AI (Agent):", response)
-
-            except Exception as e:
-                print("Error during Scheduling:", str(e))
-                continue
-        
-        if chain:
-            response = chain.invoke(user_input)
-        else:
-            response = "I don't have access to the knowledge base. Please ask general questions or schedule an interview."
-
-        if re.search(fallback_triggers, response, re.IGNORECASE):
-            print("Fallback Triggered: Using AI for external info... ")
-            chat_history.append(HumanMessage(content=user_input))
-            final_response = llm.invoke(chat_history)
-
-            chat_history.append(final_response)
-            print(f"AI (Fallback): {final_response.content}")
-        else:
-            chat_history.append(HumanMessage(content=user_input))
-            chat_history.append(AIMessage(content=response))
+        try:
+            # First try RAG for document questions
+            rag_response = chain.invoke(user_input)
+            if "insufficient context" in rag_response.lower() or "irrelevant" in rag_response.lower():
+                # If RAG can't answer, let agent decide to use tools or general LLM
+                print("RAG couldn't answer - delegating to agent...")
+                response = agent.run(user_input)
+            else:
+                # Use RAG's response
+                response = rag_response
+            
             print(f"AI: {response}")
+            memory.chat_memory.add_user_message(user_input)
+            memory.chat_memory.add_ai_message(response)
 
-    # Chat History
+        except Exception as e:
+            print(f"Error: {str(e)}")
+            # Final fallback
+            response = fallback_chain.invoke({
+                "input": user_input,
+                "chat_history": memory.buffer
+            })
+            print(f"AI: {response}")
+            memory.chat_memory.add_user_message(user_input)
+            memory.chat_memory.add_ai_message(response)
+
+    # Print chat history from memory
     print("\n--- Chat History ---")
-    for chat in chat_history:
-        if isinstance(chat, HumanMessage):
-            role = "User"
-        elif isinstance(chat, AIMessage):
-            role = "AI"
-        else:
-            role = "System"
-        print(f"{role}: {chat.content}")
-
+    for msg in memory.chat_memory.messages:
+        print(f"{msg.type}: {msg.content}")
 
 ask_ai()

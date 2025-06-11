@@ -252,13 +252,123 @@ interview_tool = StructuredTool.from_function(
 # The Chatbot
 # In the ask_ai() function, replace the relevant sections with:
 
+# def ask_ai():
+#     st.subheader("Ask the AI or Schedule an Interview")
+
+#     # Initialize session state for chat history
+#     if "chat_history" not in st.session_state:
+#         st.session_state.chat_history = []
+
+#     # Initialize document chain as None
+#     chain = None
+    
+#     # Document upload section
+#     uploaded_file = st.file_uploader("Upload Document", type=["pdf", "docx", "txt"])
+#     if uploaded_file is not None:
+#         # Save the uploaded file temporarily
+#         temp_dir = "temp_uploads"
+#         os.makedirs(temp_dir, exist_ok=True)
+#         file_path = os.path.join(temp_dir, uploaded_file.name)
+        
+#         with open(file_path, "wb") as f:
+#             f.write(uploaded_file.getbuffer())
+        
+#         st.success(f"Uploaded file: {uploaded_file.name}")
+#         try:
+#             chain = create_rag_chain(file_path, prompt, parser)
+#         except Exception as e:
+#             st.error(f"Error creating RAG chain: {str(e)}")
+#             chain = None
+
+#     # Agent tool setup
+#     # tools = [interview_tool]
+#     # agent = initialize_agent(
+#     #     tools=tools,
+#     #     llm=llm,
+#     #     agent=AgentType.STRUCTURED_CHAT_ZERO_SHOT_REACT_DESCRIPTION,
+#     #     verbose=True
+#     # )
+
+#     fallback_triggers = r"(insufficient|not (sure|enough|understand)|i don't know|no context)"
+
+#     # User Input Area
+#     user_input = st.text_input("You:", placeholder="Type your question or 'schedule interview'")
+    
+#     if user_input:
+#         if user_input.lower() == "schedule interview":
+#             st.info("Fill the form below to schedule an interview:")
+#             with st.form("interview_form"):
+#                 role = st.text_input("Target Role")
+#                 uploaded_resume = st.file_uploader("Upload Resume", type=["pdf", "docx", "txt"])
+#                 question_limit = st.number_input("Number of Questions", min_value=1, value=5)
+#                 sender_email = st.text_input("Sender Email")
+
+#                 submit = st.form_submit_button("Schedule")
+
+#                 if submit and uploaded_resume is not None:
+#                     # Save the uploaded resume temporarily
+#                     temp_resume_path = os.path.join("temp_uploads", uploaded_resume.name)
+#                     with open(temp_resume_path, "wb") as f:
+#                         f.write(uploaded_resume.getbuffer())
+                    
+#                     try:
+#                         response = schedule_interview(
+#                             role=role,
+#                             resume_path=temp_resume_path,
+#                             question_limit=question_limit,
+#                             sender_email=sender_email
+#                         )
+#                         st.success(f"AI (Agent): {response}")
+#                         st.session_state.chat_history.append(f"User: schedule interview for {role}")
+#                         st.session_state.chat_history.append(f"AI: {response}")
+#                     except Exception as e:
+#                         st.error(f"Error during Scheduling: {str(e)}")
+#                 elif submit and uploaded_resume is None:
+#                     st.error("Please upload a resume file")
+
+#         else:
+#             if chain:
+#                 try:
+#                     response = chain.invoke(user_input)
+#                 except Exception as e:
+#                     response = f"Error processing your question: {str(e)}"
+#             else:
+#                 response = "I don't have access to the knowledge base. Please ask general questions or schedule an interview."
+
+#             if re.search(fallback_triggers, response, re.IGNORECASE):
+#                 st.write("Fallback Triggered: Using AI for external info... ")
+#                 messages = [HumanMessage(content=user_input)]
+#                 final_response = llm.invoke(messages)
+#                 response = final_response.content
+                
+#             st.session_state.chat_history.append(f"User: {user_input}")
+#             st.session_state.chat_history.append(f"AI: {response}")
+#             st.write(f"AI: {response}")
+
+#     # Display chat history
+#     st.markdown("---")
+#     st.subheader("Chat History")
+#     for msg in st.session_state.chat_history:
+#         # Split into role and content if needed
+#         if isinstance(msg, str) and ":" in msg:
+#             role, content = msg.split(":", 1)
+#             st.markdown(f"**{role.strip()}:** {content.strip()}")
+#         else:
+#             st.markdown(str(msg))
+
+# ask_ai()
+
+# ... (keep all the previous imports and setup code until the ask_ai function) ...
+
 def ask_ai():
     st.subheader("Ask the AI or Schedule an Interview")
 
     # Initialize session state for chat history
     if "chat_history" not in st.session_state:
-        st.session_state.chat_history = []
-
+        st.session_state.chat_history = [
+            SystemMessage(content="You are a helpful AI Assistant. Keep responses concise.")
+        ]
+    
     # Initialize document chain as None
     chain = None
     
@@ -280,21 +390,11 @@ def ask_ai():
             st.error(f"Error creating RAG chain: {str(e)}")
             chain = None
 
-    # Agent tool setup
-    tools = [interview_tool]
-    agent = initialize_agent(
-        tools=tools,
-        llm=llm,
-        agent=AgentType.STRUCTURED_CHAT_ZERO_SHOT_REACT_DESCRIPTION,
-        verbose=True
-    )
-
-    fallback_triggers = r"(insufficient|not (sure|enough|understand)|i don't know|no context)"
-
     # User Input Area
     user_input = st.text_input("You:", placeholder="Type your question or 'schedule interview'")
     
     if user_input:
+        # Handle interview scheduling
         if user_input.lower() == "schedule interview":
             st.info("Fill the form below to schedule an interview:")
             with st.form("interview_form"):
@@ -318,42 +418,66 @@ def ask_ai():
                             question_limit=question_limit,
                             sender_email=sender_email
                         )
-                        st.success(f"AI (Agent): {response}")
-                        st.session_state.chat_history.append(f"User: schedule interview for {role}")
-                        st.session_state.chat_history.append(f"AI: {response}")
+                        st.success(f"AI: {response}")
+                        st.session_state.chat_history.append(HumanMessage(content=f"schedule interview for {role}"))
+                        st.session_state.chat_history.append(AIMessage(content=response))
                     except Exception as e:
                         st.error(f"Error during Scheduling: {str(e)}")
                 elif submit and uploaded_resume is None:
                     st.error("Please upload a resume file")
-
+        
+        # Handle regular queries
         else:
+            # First try to answer from document if available
             if chain:
                 try:
                     response = chain.invoke(user_input)
                 except Exception as e:
                     response = f"Error processing your question: {str(e)}"
             else:
-                response = "I don't have access to the knowledge base. Please ask general questions or schedule an interview."
-
-            if re.search(fallback_triggers, response, re.IGNORECASE):
-                st.write("Fallback Triggered: Using AI for external info... ")
-                messages = [HumanMessage(content=user_input)]
-                final_response = llm.invoke(messages)
-                response = final_response.content
-                
-            st.session_state.chat_history.append(f"User: {user_input}")
-            st.session_state.chat_history.append(f"AI: {response}")
+                response = None
+            
+            # If no document response or insufficient context, use LLM with chat history
+            if not chain or "INSUFFICIENT CONTEXT" in response or "SORRY:" in response:
+                # Check if this is a follow-up question about numbers
+                if re.search(r'\d+', user_input) and any(re.search(r'\d+', msg.content) for msg in st.session_state.chat_history if isinstance(msg, (HumanMessage, AIMessage))):
+                    # Special handling for numerical questions
+                    math_prompt = f"""
+                    Based on this conversation history:
+                    {[msg.content for msg in st.session_state.chat_history]}
+                    
+                    Answer this question: {user_input}
+                    
+                    If it involves calculations with numbers mentioned previously, perform them.
+                    For example, if asked "which is greater 10 or 9" then "add the greater number with 2":
+                    - First answer which is greater
+                    - Then add 2 to the greater number (10 + 2 = 12)
+                    - Show your work
+                    """
+                    
+                    math_response = llm.invoke(math_prompt)
+                    response = math_response.content
+                else:
+                    # General question with chat history context
+                    messages = st.session_state.chat_history.copy()
+                    messages.append(HumanMessage(content=user_input))
+                    llm_response = llm.invoke(messages)
+                    response = llm_response.content
+            
+            # Add to chat history and display
+            st.session_state.chat_history.append(HumanMessage(content=user_input))
+            st.session_state.chat_history.append(AIMessage(content=response))
             st.write(f"AI: {response}")
 
     # Display chat history
     st.markdown("---")
     st.subheader("Chat History")
     for msg in st.session_state.chat_history:
-        # Split into role and content if needed
-        if isinstance(msg, str) and ":" in msg:
-            role, content = msg.split(":", 1)
-            st.markdown(f"**{role.strip()}:** {content.strip()}")
-        else:
-            st.markdown(str(msg))
+        if isinstance(msg, HumanMessage):
+            st.markdown(f"**You:** {msg.content}")
+        elif isinstance(msg, AIMessage):
+            st.markdown(f"**AI:** {msg.content}")
+        elif isinstance(msg, SystemMessage):
+            continue  # Skip system messages in display
 
 ask_ai()
