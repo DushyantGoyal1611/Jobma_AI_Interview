@@ -6,10 +6,20 @@ import json
 import warnings
 from datetime import datetime
 from dotenv import load_dotenv
+# Libraries for Report Generation
+from reportlab.lib.pagesizes import A4
+from reportlab.pdfgen import canvas
+from reportlab.lib.utils import simpleSplit
 # LangChain related libraries
 # Gemini
 from langchain_google_genai import ChatGoogleGenerativeAI
+# RAG Libraries
+from langchain_core.tools import tool
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+# For Sending Mail
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
 
 # Code Starts from here --------------------------------------------->
 warnings.filterwarnings('ignore')

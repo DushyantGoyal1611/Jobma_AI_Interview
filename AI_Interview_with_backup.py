@@ -6,10 +6,20 @@ import json
 import warnings
 from datetime import datetime
 from dotenv import load_dotenv
+# Libraries for Report Generation
+from reportlab.lib.pagesizes import A4
+from reportlab.pdfgen import canvas
+from reportlab.lib.utils import simpleSplit
 # LangChain related libraries
 # Gemini
 from langchain_google_genai import ChatGoogleGenerativeAI
+# RAG Libraries
+from langchain_core.tools import tool
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+# For Sending Mail
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
 
 # Code Starts from here --------------------------------------------->
 warnings.filterwarnings('ignore')
@@ -155,54 +165,132 @@ try:
     feedback_data = extract_json(feedback_response.content)
 except Exception as e:
     print("Invalid JSON from Gemini:\n", feedback_response.content)
-    feedback_data = {
-        "total_score": question_limit * 10,
-        "achieved_score": 0,
-        "summary": "Feedback could not be generated. Candidate may not have answered any questions."
-    }
+    raise e
 
-# Extract components
-summary = feedback_data.get("Summary", "No Summary Provided")
-recommendation = feedback_data.get("Recommendation", "No Recommendation Provided")
+# Report Generation
+def generate_pdf_report(feedback_json, time_taken, filename="Interview_Report.pdf", image_path=None):
+    c = canvas.Canvas(filename, pagesize=A4)
+    width, height = A4
+    y = height - 50
+    margin = 50
+    max_width = width - 2 * margin
 
-achieved_score = 0
-for item in feedback_data.get("Feedback", []):
+    # Add image at the top-right
+    if image_path:
+        try:
+            img_width = 80
+            img_height = 80
+            c.drawImage(image_path, width - margin - img_width, height - img_height - 20, width=img_width, height=img_height)
+        except Exception as e:
+            print(f"Error loading image: {e}")
+
+    # Write the Title and Meta Info
+    c.setFont("Helvetica-Bold", 14)
+    c.drawString(margin, y, "Interview Report")
+    y -= 30
+
+    c.setFont("Helvetica", 12)
+    c.drawString(margin, y, f"Name: {name}")
+    y -= 20
+    c.drawString(margin, y, f"Email: {email}")
+    y -= 20
+    c.drawString(margin, y, f"Experience: {experience}")
+    y -= 20
+    c.drawString(margin, y, f"Skills: {', '.join(skills)}")
+    y -= 20
+    c.drawString(margin, y, f"Time Taken: {str(time_taken)}")
+    y -= 30
+    c.drawString(margin, y, "Candidate Performance:")
+    y -= 20
+
+    def draw_wrapped_text(c, text, fontname, fontsize, x, y, max_width):
+        lines = simpleSplit(text, fontname, fontsize, max_width)
+        for line in lines:
+            if y < 100:
+                c.showPage()
+                y = height - 50
+                c.setFont(fontname, fontsize)
+            c.drawString(x, y, line.strip())
+            y -= 16
+        return y
+
+    for item in feedback_json.get('Feedback', []):
+        if y < 120:
+            c.showPage()
+            y = height - 50
+            c.setFont("Helvetica", 12)
+
+        if 'Skill' in item:
+            y = draw_wrapped_text(c, f"Skill: {item['Skill']}", "Helvetica-Bold", 12, margin, y, max_width)
+        y = draw_wrapped_text(c, f"Question: {item['Question']}", "Helvetica", 12, margin, y, max_width)
+        y = draw_wrapped_text(c, f"Answer: {item['Answer']}", "Helvetica", 12, margin, y, max_width)
+        y = draw_wrapped_text(c, f"Score: {item['Score']}/10 | Feedback: {item['Comment']}", "Helvetica", 12, margin, y, max_width)
+        y -= 10
+
+    # Summary
+    c.setFont("Helvetica-Bold", 12)
+    y = draw_wrapped_text(c, "Summary:", "Helvetica-Bold", 12, margin, y, max_width)
+    c.setFont("Helvetica", 12)
+    y = draw_wrapped_text(c, feedback_json.get('Summary', 'No Summary Provided'), "Helvetica", 12, margin, y, max_width)
+
+    # Recommendation
+    c.setFont("Helvetica-Bold", 12)
+    y = draw_wrapped_text(c, "Recommendation:", "Helvetica-Bold", 12, margin, y, max_width)
+    c.setFont("Helvetica", 12)
+    y = draw_wrapped_text(c, feedback_json.get('Recommendation', 'No Recommendation from my side'), "Helvetica", 12, margin, y, max_width)
+
+    c.save()
+
+generate_pdf_report(feedback_data, time_taken, filename="test_report7.pdf", image_path="jobma_logo.png")
+print("PDF Report Generated: Interview_Report.pdf")
+
+@tool
+def confirmation_mail():
+    """This function will calculate score percentage and confirm if mail should be sent based on threshold."""
+    threshold = 65
+    feedback_items = feedback_data.get("Feedback", [])
+    total_score = question_limit * 10
+    achieved_score = 0
+
+    for item in feedback_items:
+        try:
+            achieved_score += int(item.get("Achieved Score", 0))
+        except Exception as e:
+            continue
+    
+    if total_score == 0:
+        return "Could not compute score percentage due to missing or invalid score data."
+    
+    score_percentage = (achieved_score / total_score) * 100
+
+    print(f"Total Score: {total_score}")
+    print(f"Achieved Score: {achieved_score}")
+    print(f"Percentage: {score_percentage}")
+    
+    if score_percentage >= threshold:
+        subject = "Interview Result: Passed"
+        body = f"Dear {name}, \n\nCongratulations! You passed the AI Interview Round with the score of {score_percentage}% \nYou are proceeded to the next round. \n\nBest Regards,\nPehchan Kaun"
+    else:
+        return f"Candidate scored {score_percentage:.2f}%. Below threshold. No mail sent."
+    
+    # Prepare email
+    msg = MIMEMultipart()
+    sender_id = sender_email
+    msg['From'] = sender_id
+    msg['To'] = email
+    msg['Subject'] = subject
+    msg.attach(MIMEText(body, 'plain'))
+
+    # Send mail via Gmail SMTP server
     try:
-        achieved_score += int(item.get("Achieved Score", 0))
-    except:
-        continue
+        server = smtplib.SMTP('smtp.gmail.com', 587)
+        server.starttls()
+        server.login(sender_id, app_password)
+        server.send_message(msg)
+        server.quit()
+        return f"Candidate passed with {score_percentage:.2f}% score. Confirmation mail sent to {email}."
+    except Exception as e:
+        return f"Score: {score_percentage:.2f}%. Failed to send email due to: {str(e)}"
 
-result_context = {
-    "name": name,
-    "target_role": target_role,
-    "skills": skills,
-    "experience": experience,
-    "email": email,
-    "question_limit": question_limit,
-    "time_taken": str(time_taken),
-    "total_score":question_limit*10,
-    "qna": qa_pairs,
-    "achieved_score":achieved_score,
-    "summary":summary,
-    "recommendation":recommendation
-}
-
-
-json_file = "candidates_report.json"
-data = []
-
-if os.path.exists(json_file):
-    try:
-        with open(json_file, "r") as f:
-            data = json.load(f)
-            if not isinstance(data, list):
-                data = [data]
-    except json.JSONDecodeError:
-        data = []
-
-data.append(result_context)
-
-with open(json_file, "w") as f:
-    json.dump(data, f, indent=2)
-
-print(f"Candidate's Report Saved successfully and saved to '{json_file}'.")
+result = confirmation_mail.invoke(input={})
+print(result)
