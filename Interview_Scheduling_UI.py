@@ -1,11 +1,9 @@
 # This is the Interviewer's Side (Updated)
 
 import os
-import re
 import json
 import warnings
 import streamlit as st
-from streamlit_chat import message
 from datetime import datetime
 from dotenv import load_dotenv
 
@@ -362,8 +360,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 def ask_ai():
-    st.title("💬 Jobma Interview Assistant")
-    st.caption("A WhatsApp-like chat interface for interview scheduling")
+    st.title("Jobma Interview Assistant")
 
     # Initialize components
     memory = ConversationBufferMemory(k=20, memory_key="chat_history", return_messages=True)
