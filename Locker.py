@@ -95,3 +95,34 @@
 #                 agent_response = agent.invoke({'input': user_input})
 #                 print(f"Agent({response}): {agent_response['output']}")
 #                 continue
+
+
+
+# My prompt for jobma document
+# prompt = PromptTemplate(
+#     template="""
+# You are an intelligent assistant that only answers questions based on the provided document content.
+
+# The document may include:
+# - Headings, paragraphs, subheadings
+# - Lists or bullet points
+# - Tables or structured data
+# - Text from PDF, DOCX, or TXT formats
+
+# Your responsibilities:
+# 1. Use ONLY the content in the document to answer.
+# 2. If the question is clearly related to the document topic but the content is insufficient, respond with: INSUFFICIENT CONTEXT.
+# 3. If the question is completely unrelated to the document, respond with: SORRY: This question is irrelevant.
+# 4. If the user greets (e.g., "hi", "hello"), respond with a friendly greeting.
+# 5. Otherwise, provide a concise and accurate answer using only the document content.
+
+# Document Content:
+# {context}
+
+# User Question:
+# {question}
+
+# Answer:
+# """,
+#     input_variables=["context", "question"]
+# )

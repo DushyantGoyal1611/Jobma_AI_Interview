@@ -3,8 +3,8 @@
 import os
 import json
 import warnings
-from datetime import datetime
 from dotenv import load_dotenv
+from datetime import datetime, timedelta
 
 # LangChain & Gemini
 from langchain_google_genai import ChatGoogleGenerativeAI, GoogleGenerativeAIEmbeddings
@@ -17,6 +17,7 @@ from langchain_core.runnables import RunnableParallel, RunnablePassthrough, Runn
 from langchain_core.tools import StructuredTool
 from langchain.agents import initialize_agent, AgentType
 from langchain.memory import ConversationBufferMemory
+from typing import Optional
 from pydantic import BaseModel, Field, EmailStr
 
 # Code Starts from here --------------------------------------------->
@@ -33,7 +34,7 @@ class ScheduleInterviewInput(BaseModel):
 
     # For Tracking Candidate
 class TrackCandidateInput(BaseModel):
-    email:EmailStr = Field(description="Email address of the Candidate")
+    email:Optional[EmailStr] = None
 
 # For Current Day
 current_month_year = datetime.now().strftime("%B %Y")
@@ -57,10 +58,8 @@ The document may include:
 
 Your responsibilities:
 1. Use ONLY the content in the document to answer.
-2. If the question is clearly related to the document topic but the content is insufficient, respond with: INSUFFICIENT CONTEXT.
-3. If the question is completely unrelated to the document, respond with: SORRY: This question is irrelevant.
-4. If the user greets (e.g., "hi", "hello"), respond with a friendly greeting.
-5. Otherwise, provide a concise and accurate answer using only the document content.
+2. If the user greets (e.g., "hi", "hello"), respond with a friendly greeting.
+3. Otherwise, provide a concise and accurate answer using only the document content.
 
 Document Content:
 {context}
@@ -79,7 +78,10 @@ intent_prompt = PromptTemplate(
 
 Possible Intents:
 - **schedule_interview**: The user wants to schedule an interview, usually mentions a role, resume, job title, or similar context.
-- **track_candidate**: The user wants to check or track a candidate's interview progress, typically mentions an email ID or asks about interview status/results.
+- **track_candidate**: The user wants to check or track candidate interview details. This may include:
+  - Asking for a specific candidate's status using an email or name.
+  - Requesting a summary, details or list of all candidates interviewed.
+  - Asking how many interviews have been conducted or who has been interviewed.
 - **greet**: The user says hello, hi, good morning, or other greeting-like phrases.
 - **help**: The user is asking for help or support about using the Jobma platform.
 - **bye**: The user says goodbye or ends the conversation.
@@ -122,7 +124,7 @@ def extract_document(file_path):
     return []
 
 # RAG Workflow
-def create_rag_chain(doc, prompt, parser, score_threshold=0.50, resume_text=False):
+def create_rag_chain(doc, prompt, parser, score_threshold=1.0, resume_text=False):
     # Document Loader
     docs = extract_document(doc)
     if not docs:
@@ -268,18 +270,42 @@ def schedule_interview(role:str|dict, resume_path:str, question_limit:int, sende
     return f"Interview scheduled successfully and saved to '{json_file}'."
 
 # Function to Track Candidate's Details using their email id
-def track_candidate(email:str) -> dict | str:
-    """Track Candidate using email ID and return their stored interview data."""
+# def track_candidate(email:str) -> dict | str:
+#     """Track Candidate using email ID and return their stored interview data."""
+    # try:
+    #     with open("candidates_report.json", "r") as f:
+    #         candidates = json.load(f)
+
+#         for candidate in candidates:
+#             if candidate['email'].lower() == email.lower():
+#                 return candidate
+#         return f"No candidate found with email {email}."
+#     except Exception as e:
+#         return f"Error occurred: {str(e)}"
+
+def track_candidate(email:str="") -> dict | list | str:
+    """ Track candidate(s) by email. If no email is provided, return all candidate records. """
     try:
         with open("candidates_report.json", "r") as f:
             candidates = json.load(f)
 
-        for candidate in candidates:
-            if candidate['email'].lower() == email.lower():
-                return candidate
-        return f"No candidate found with email {email}."
+        if not isinstance(candidates, list):
+            candidates = [candidates]
+
+        if not candidates:
+            return "No candidates found in the database."
+
+        if email:
+            for candidate in candidates:
+                if candidate.get('email', '').lower() == email.lower():
+                    return json.dumps(candidate, indent=2)
+            return f"No candidate found with email {email}."
+        
+        return json.dumps(candidates, indent=2)
+        
     except Exception as e:
         return f"Error occurred: {str(e)}"
+
 
 # Tools   
 interview_tool = StructuredTool.from_function(
@@ -292,7 +318,7 @@ interview_tool = StructuredTool.from_function(
 track_candidate_tool = StructuredTool.from_function(
     func=track_candidate,
     name='track_candidate',
-    description="Track candidates using email. Input should be the candidate's email address.",
+    description="Track candidates. Provide email to get specific candidate details or leave blank to get a summary of all interviews.",
     args_schema=TrackCandidateInput
 )
 
