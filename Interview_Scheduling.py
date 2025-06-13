@@ -17,17 +17,7 @@ from langchain_core.runnables import RunnableParallel, RunnablePassthrough, Runn
 from langchain_core.tools import StructuredTool
 from langchain.agents import initialize_agent, AgentType
 from langchain.memory import ConversationBufferMemory
-from pydantic import BaseModel, Field  
-
-# Libraries for Report Generation
-from reportlab.lib.pagesizes import A4
-from reportlab.pdfgen import canvas
-from reportlab.lib.utils import simpleSplit
-
-# For Sending Mail
-import smtplib
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
+from pydantic import BaseModel, Field, EmailStr
 
 # Code Starts from here --------------------------------------------->
 warnings.filterwarnings('ignore')
@@ -43,7 +33,7 @@ class ScheduleInterviewInput(BaseModel):
 
     # For Tracking Candidate
 class TrackCandidateInput(BaseModel):
-    email:str = Field(description="Email address of the Candidate")
+    email:EmailStr = Field(description="Email address of the Candidate")
 
 # For Current Day
 current_month_year = datetime.now().strftime("%B %Y")
@@ -265,7 +255,7 @@ def schedule_interview(role:str|dict, resume_path:str, question_limit:int, sende
         try:
             with open(json_file, "r") as f:
                 data = json.load(f)
-                if not isinstance(data, list):
+            if not isinstance(data, list):
                     data = [data]
         except json.JSONDecodeError:
             data = []
@@ -278,19 +268,6 @@ def schedule_interview(role:str|dict, resume_path:str, question_limit:int, sende
     return f"Interview scheduled successfully and saved to '{json_file}'."
 
 # Function to Track Candidate's Details using their email id
-# def track_candidate(input: TrackCandidateInput) -> dict | str:
-#     """Track Candidate using email ID and return their stored interview data."""
-#     try:
-#         with open("candidates_report.json", "r") as f:
-#             candidates = json.load(f)
-
-#         for candidate in candidates:
-#             if candidate['email'].lower() == input.email.lower():
-#                 return candidate
-#         return f"No candidate found with email {input.email}."
-#     except Exception as e:
-#         return f"Error occurred: {str(e)}"
-
 def track_candidate(email:str) -> dict | str:
     """Track Candidate using email ID and return their stored interview data."""
     try:
@@ -304,7 +281,7 @@ def track_candidate(email:str) -> dict | str:
     except Exception as e:
         return f"Error occurred: {str(e)}"
 
-# Agent   
+# Tools   
 interview_tool = StructuredTool.from_function(
     func=schedule_interview,
     name='schedule_interview',
@@ -315,8 +292,9 @@ interview_tool = StructuredTool.from_function(
 track_candidate_tool = StructuredTool.from_function(
     func=track_candidate,
     name='track_candidate',
-    description="Track candidates using email. Input should be the candidate's email address (string).",
-) 
+    description="Track candidates using email. Input should be the candidate's email address.",
+    args_schema=TrackCandidateInput
+)
 
 # Chatbot using Intent
 def ask_ai():
@@ -326,11 +304,12 @@ def ask_ai():
     intent_chain = intent_prompt | llm | parser
 
     tools = [interview_tool, track_candidate_tool]
+    # Agent
     agent = initialize_agent(
         tools=tools,
         llm=llm,
         agent=AgentType.STRUCTURED_CHAT_ZERO_SHOT_REACT_DESCRIPTION,
-        verbose=True,
+        verbose=False,
         memory=memory,
         handle_parsing_errors=True,
         max_iterations=3

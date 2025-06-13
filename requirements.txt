@@ -18,9 +18,7 @@ tiktoken
 # Document Loaders
 unstructured  # For UnstructuredWordDocumentLoader (Word, PDFs, etc.)
 python-docx
-
-# Web Search Tool
-duckduckgo-search
+pydantic[email]
 
 # ML & utilities
 numpy
@@ -31,6 +29,7 @@ python-dotenv
 
 # Web App (optional for frontend)
 streamlit
+streamlit-chat
 
 # Report Generation
 reportlab

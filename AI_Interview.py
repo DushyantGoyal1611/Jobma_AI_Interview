@@ -1,4 +1,4 @@
-# This is the Candidate's Side
+# This is the Candidate's Side (Updated)
 
 import os
 import re
@@ -42,9 +42,6 @@ experience = matched_data.get("experience", "NA")
 email = matched_data["email"]
 question_limit = matched_data.get("question_limit", 0)
 sender_email = matched_data.get("sender_email", "NA")
-
-# App Password (Used later for Mail Sending)
-app_password = os.getenv("APP_PASSWORD")
 
 # LLM to be used
 llm = ChatGoogleGenerativeAI(model='gemini-2.0-flash')
