@@ -33,3 +33,8 @@ streamlit-chat
 
 # Report Generation
 reportlab
+
+# For API
+langserve
+fastapi
+uvicorn
