@@ -42,3 +42,4 @@ uvicorn
 # SQL
 mysql-connector-python
 sqlalchemy
+pymysql

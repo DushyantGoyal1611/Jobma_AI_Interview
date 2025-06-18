@@ -6,6 +6,7 @@ import json
 import warnings
 from datetime import datetime
 from dotenv import load_dotenv
+from functools import lru_cache
 # LangChain related libraries
 # Gemini
 from langchain_google_genai import ChatGoogleGenerativeAI
@@ -48,32 +49,56 @@ if not engine:
 user_id = input("Enter your email id: ").strip()
 applied_role = input("Enter the role you applied for: ").strip()
 
-# Extracting JSON
-with open("interview_context.json", "r") as f:
-    interview_context = json.load(f)
+# SQL query to fetch candidate and scheduled interview
+query = text("""
+SELECT 
+    c.id AS candidate_id,
+    c.name,
+    c.email,
+    c.skills,
+    c.experience,
+    i.id AS invitation_id,
+    i.role,
+    i.question_limit,
+    i.sender_email,
+    i.status
+FROM AI_INTERVIEW_PLATFORM.candidates c
+JOIN AI_INTERVIEW_PLATFORM.interview_invitation i
+    ON c.id = i.candidate_id
+WHERE LOWER(c.email) = :email
+  AND LOWER(i.role) = :role
+  AND LOWER(i.status) = 'scheduled'
+""")
 
-# Extracting Necessary Inputs from the JSON and Checking for matching Candidate
-matched_data = None
-for context in interview_context:
-    if context.get('email', '').strip().lower() == user_id.lower() and context.get('target_role', '').strip().lower() == applied_role.lower():
-        matched_data = context
-        break
+with engine.connect() as conn:
+    result = conn.execute(query, {"email": user_id, "role":applied_role}).fetchone()
 
-# Handle if no match found
-if not matched_data:
-    print("You are not scheduled for the interview.\nPlease contact HR.")
+if not result:
+    print("You are not scheduled for the interview or invitation is not active. \nPlease Contact HR")
     exit()
 
-name = matched_data.get("name", "NA")
-target_role = matched_data["target_role"]
-skills = matched_data.get("skills", [])
-experience = matched_data.get("experience", "NA")
-email = matched_data["email"]
-question_limit = matched_data.get("question_limit", 0)
-sender_email = matched_data.get("sender_email", "NA")
+candidate_id = result.candidate_id
+invitation_id = result.invitation_id
+name = result.name
+target_role = result.role
+experience = result.experience
+email = result.email
+question_limit = result.question_limit
+sender_email = result.sender_email
+if isinstance(result.skills, str) and result.skills.strip():
+    try:
+        skills = json.loads(result.skills)
+    except json.JSONDecodeError:
+        skills = [result.skills.strip()]  # fallback to treat as single skill string
+else:
+    skills = []  # empty list if no skills
 
 # LLM to be used
-llm = ChatGoogleGenerativeAI(model='gemini-2.0-flash')
+@lru_cache(maxsize=1)
+def get_llm():
+    return ChatGoogleGenerativeAI(model='gemini-2.0-flash', temperature=0)
+
+llm = get_llm()
 
 # Chat History
 qna_history = [
@@ -101,7 +126,7 @@ def generate_next_question(experience, target_role, max_retries=5):
         try:
             response = llm.invoke(question_prompt)
             question = response.content.strip() if hasattr(response, "content") else str(response)
-            if question not in asked_questions:
+            if question and question not in asked_questions:
                 asked_questions.add(question)
                 return question
         except Exception as e:
@@ -198,37 +223,73 @@ for item in feedback_data.get("Feedback", []):
     except:
         continue
 
-result_context = {
-    "name": name,
-    "target_role": target_role,
-    "skills": skills,
-    "experience": experience,
-    "email": email,
-    "question_limit": question_limit,
-    "time_taken": str(time_taken),
-    "total_score":question_limit*10,
-    "qna": qa_pairs,
-    "achieved_score":achieved_score,
-    "summary":summary,
-    "recommendation":recommendation
-}
+skills_str = json.dumps(skills, ensure_ascii=False)
 
+# Separate questions and answers
+questions_list = [pair["Question"] for pair in qa_pairs]
+answers_list = [pair["Answer"] for pair in qa_pairs]
 
-json_file = "candidates_report.json"
-data = []
+questions_json = json.dumps(questions_list, ensure_ascii=False)
+answers_json = json.dumps(answers_list, ensure_ascii=False)
+feedback_json = json.dumps(feedback_data.get("Feedback", []), ensure_ascii=False)
 
-if os.path.exists(json_file):
-    try:
-        with open(json_file, "r") as f:
-            data = json.load(f)
-            if not isinstance(data, list):
-                data = [data]
-    except json.JSONDecodeError:
-        data = []
+# Compose the SQL insert query
+insert_query = text("""
+    INSERT INTO interview_details (
+        invitation_id,
+        candidate_id,
+        questions,
+        answers,
+        achieved_score,
+        total_score,
+        feedback,
+        summary,
+        recommendation,
+        skills
+    ) VALUES (
+        :invitation_id,
+        :candidate_id,
+        :questions,
+        :answers,
+        :achieved_score,
+        :total_score,
+        :feedback,
+        :summary,
+        :recommendation,
+        :skills
+    )
+""")
 
-data.append(result_context)
+try:
+    with engine.begin() as conn:
+        # Insert interview details
+        conn.execute(insert_query, {
+            "invitation_id": invitation_id,
+            "candidate_id": candidate_id, 
+            "questions": questions_json,
+            "answers": answers_json,
+            "achieved_score": achieved_score,
+            "total_score": question_limit * 10,
+            "feedback": feedback_json,
+            "summary": summary,
+            "recommendation": recommendation,
+            "skills": skills_str
+        })
 
-with open(json_file, "w") as f:
-    json.dump(data, f, indent=2)
+        # Update interview status to COMPLETED (move this here)
+        update_status_query = text("""
+            UPDATE AI_INTERVIEW_PLATFORM.interview_invitation
+            SET status = :status
+            WHERE id = :invitation_id
+        """)
 
-print(f"Candidate's Report Saved successfully and saved to '{json_file}'.")
+        conn.execute(update_status_query, {
+            "status": "Completed",
+            "invitation_id": invitation_id
+        })
+
+    print("Candidate's interview result saved to SQL database.")
+    print(f"Interview status updated to 'Completed'")
+
+except Exception as e:
+    print("Error saving interview result to SQL:", e)
