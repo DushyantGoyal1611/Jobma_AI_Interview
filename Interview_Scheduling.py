@@ -4,7 +4,7 @@ import os
 import json
 import warnings
 from dotenv import load_dotenv
-from datetime import datetime, timedelta
+from datetime import datetime
 
 # LangChain & Gemini
 from langchain_google_genai import ChatGoogleGenerativeAI, GoogleGenerativeAIEmbeddings
@@ -20,10 +20,34 @@ from langchain.memory import ConversationBufferMemory
 from typing import Optional
 from pydantic import BaseModel, Field, EmailStr
 from functools import lru_cache
+from sqlalchemy import create_engine
+from urllib.parse import quote_plus
 
 # Code Starts from here --------------------------------------------->
 warnings.filterwarnings('ignore')
 load_dotenv()
+
+# SQL Connection
+def create_connection():
+    print("Creating Connection with DB")
+    try:
+        user = os.getenv("DB_USER")
+        raw_password = os.getenv("DB_PASSWORD")
+        password = quote_plus(raw_password)
+        host = os.getenv("DB_HOST")
+        port = os.getenv("DB_PORT")
+        db = os.getenv("DB_NAME")
+
+        # Credentials of mySQL connection
+        connection_string = f"mysql+pymysql://{user}:{password}@{host}:{port}/{db}"
+        engine = create_engine(connection_string)
+        print("Connection created Successfully")
+        return engine
+    except Exception as e:
+        print(f"Error creating connection with DB: {e}")
+        return None
+
+
 
 # Input Schema Using Pydantic
     # For Interview Scheduling

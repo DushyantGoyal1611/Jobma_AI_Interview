@@ -110,6 +110,7 @@ Intent:
     input_variables=['input']
 )
 
+
 # Document Loader
 def extract_document(file_path):
     try:
