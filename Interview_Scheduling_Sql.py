@@ -1,7 +1,6 @@
 # This is the Interviewer's Side (Updated)
 
 import os
-import json
 import warnings
 from dotenv import load_dotenv
 from datetime import datetime
@@ -286,22 +285,14 @@ def schedule_interview(role:str|dict, resume_path:str, question_limit:int, sende
     phone = resume_result.get("Phone", "NA")
     current_time = datetime.now()
 
-    INTERVIEW_STATUS = {
-    "SCHEDULED": "Scheduled",
-    "IN_PROGRESS": "In Progress",
-    "COMPLETED": "Completed",
-    "CANCELLED": "Cancelled"
-    }
-
-
     engine = create_connection()
 
-    with engine.begin() as conn:
+    with engine.begin() as conn:      # Ensures transactional safety: commits on success, rolls back on error.
         # 1. Check if candidate exists
         result = conn.execute(
             text("Select id from AI_INTERVIEW_PLATFORM.candidates Where email = :email"),
             {"email": email}
-        ).fetchone()
+        ).fetchone()        
 
         if result:
             candidate_id = result[0]
@@ -322,6 +313,7 @@ def schedule_interview(role:str|dict, resume_path:str, question_limit:int, sende
                 "created_at": current_time
             })
             # Get new candidate_id
+                # Scalar fetches the first column of the first row of the result set, or returns None if there are no rows.
             candidate_id = conn.execute(
                 text("SELECT id FROM AI_INTERVIEW_PLATFORM.candidates WHERE email = :email"),
                 {"email": email}
@@ -339,7 +331,7 @@ def schedule_interview(role:str|dict, resume_path:str, question_limit:int, sende
                 "role": role,
                 "question_limit": question_limit,
                 "sender_email": sender_email,
-                "status": INTERVIEW_STATUS["SCHEDULED"],
+                "status": "Scheduled",
                 "interview_scheduling_time": current_time,
                 "created_at": current_time
             })
@@ -348,27 +340,34 @@ def schedule_interview(role:str|dict, resume_path:str, question_limit:int, sende
 
 def track_candidate(email:str="") -> dict | list | str:
     """ Track candidate(s) by email. If no email is provided, return all candidate records. """
-    try:
-        with open("candidates_report.json", "r") as f:
-            candidates = json.load(f)
-
-        if not isinstance(candidates, list):
-            candidates = [candidates]
-
-        if not candidates:
-            return "No candidates found in the database."
-
+    engine = create_connection()
+    with engine.begin() as conn:
         if email:
-            for candidate in candidates:
-                if candidate.get('email', '').lower() == email.lower():
-                    return json.dumps(candidate, indent=2)
-            return f"No candidate found with email {email}."
-        
-        return json.dumps(candidates, indent=2)
-        
-    except Exception as e:
-        return f"Error occurred: {str(e)}"
+            email = email.strip().lower()
+            result = conn.execute(
+                text("""
+                    Select * from AI_INTERVIEW_PLATFORM.interview_details id
+                    left join AI_INTERVIEW_PLATFORM.candidates c
+                    on id.candidate_id = c.id
+                    where c.email = :email
+                     
+                """),
+                {"email":email}
+            ).mappings().all()
+        else:
+            result = conn.execute(
+                text("""
+                    SELECT *
+                    FROM AI_INTERVIEW_PLATFORM.interview_details id
+                    LEFT JOIN AI_INTERVIEW_PLATFORM.candidates c
+                    ON id.candidate_id = c.id
+                """)
+            ).mappings().all()
 
+        if not result:
+            return "No candidates found in the database"    
+        
+    return [dict(row) for row in result]
 
 # Tools   
 interview_tool = StructuredTool.from_function(
