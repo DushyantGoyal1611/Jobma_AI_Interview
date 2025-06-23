@@ -127,12 +127,13 @@ if user_id:
                             SystemMessage(content="You are an AI Interviewer. Ask one question at a time based on candidate's resume. After the interviewee answers, ask the next one. Keep it conversational.")
                         ]
                         st.session_state.start_time = datetime.now()
-                        st.session_state.current_question = ""
+                        st.session_state.current_question = None
                         st.session_state.waiting_for_answer = False  
                         st.rerun()
 
 else:
     st.info("Please enter your email to proceed.")
+
 
 def initialize_session_state():
     if "interview_started" not in st.session_state:
@@ -162,18 +163,20 @@ def initialize_session_state():
     if "start_time" not in st.session_state:
         st.session_state.start_time = datetime.now()
     if "current_question" not in st.session_state:
-        st.session_state.current_question = ""
+        st.session_state.current_question = None
     if "end_time" not in st.session_state:
         st.session_state.end_time = None
     if "feedback_generated" not in st.session_state:
         st.session_state.feedback_generated = False
     if "interview_completed" not in st.session_state:
         st.session_state.interview_completed = False
+    if "waiting_for_answer" not in st.session_state:
+        st.session_state.waiting_for_answer = False 
 
 initialize_session_state()
 
 # Role-based Question-Generation
-def generate_next_question(experience, target_role, max_retries=5):
+def generate_next_question(experience, target_role, max_retries=10):
     for _ in range(max_retries):
         question_prompt = f"""
             You are an AI Interviewer interviewing a candidate for the role of "{target_role}".
@@ -186,18 +189,19 @@ def generate_next_question(experience, target_role, max_retries=5):
                 - 2 to 6 years → intermediate to advanced level.
                 - More than 6 years → advanced level.
             - You may include technical, situational, or behavioural elements as appropriate to the role.
-            - Don't repeat questions
 
             Only output the interview question. Do not include explanations or extra text.
         """
+
         try:
             response = llm.invoke(question_prompt)
             question = response.content.strip() if hasattr(response, "content") else str(response)
-            if question not in st.session_state.asked_questions:
+            if question and question not in st.session_state.asked_questions:
                 st.session_state.asked_questions.add(question)
                 return question
         except Exception as e:
             st.error(f"Error generating question: {e}")
+            continue
     return "All unique questions have been exhausted."
 
 # Extracts JSON safely from Gemini
@@ -211,47 +215,60 @@ def extract_json(text):
         raise ValueError("Could not extract valid JSON.")
 
 # Chatbot
-if st.session_state.interview_started and st.session_state.counter < st.session_state.question_limit:
-    # Generate and print next question
-    if not st.session_state.current_question:
+if st.session_state.interview_started and not st.session_state.interview_completed:
+    # Display progress
+    st.write(f"Question {st.session_state.counter + 1} of {st.session_state.question_limit}")
+    
+    # Generate question if none is current
+    if st.session_state.current_question is None or st.session_state.current_question in st.session_state.asked_questions:
         question = generate_next_question(st.session_state.experience, st.session_state.role)
         if question == "All unique questions have been exhausted.":
-            st.write("AI: All unique questions have been exhausted.")
-            st.session_state.interview_started = False
+            st.error("No more unique questions available.")
             st.session_state.interview_completed = True
             st.session_state.end_time = datetime.now()
-            st.rerun()
         else:
             st.session_state.current_question = question
             st.session_state.qna_history.append(AIMessage(content=question))
-        
-    st.write(f"AI: {st.session_state.current_question}")
     
-    # Wait for candidate's response
-    interviewee_response = st.text_input("You: ", key=f"response_{st.session_state.counter}")
-    if interviewee_response:
-        if interviewee_response.lower() == 'exit':
-            st.session_state.interview_started = False
-            st.session_state.interview_completed = True
-            st.session_state.end_time = datetime.now()
-            st.write("Interview Ended. \nThank you!")
-            st.rerun()
-        else:
-            st.session_state.qna_history.append(HumanMessage(content=interviewee_response))
-            st.session_state.qa_pairs.append({
-                "Question": st.session_state.current_question,
-                "Answer": interviewee_response
-            })
-            st.session_state.asked_questions.add(st.session_state.current_question)
-            st.session_state.counter += 1
-            st.session_state.current_question = ""
-
-            if st.session_state.counter >= st.session_state.question_limit:
-                st.session_state.interview_started = False
+    # Display current question
+    if st.session_state.current_question:
+        st.write(f"AI: {st.session_state.current_question}")
+        
+        # Get candidate's response
+        interviewee_response = st.text_input("Your answer:", key=f"response_{st.session_state.counter}")
+        
+        if interviewee_response:
+            if interviewee_response.lower() == 'exit':
                 st.session_state.interview_completed = True
                 st.session_state.end_time = datetime.now()
+                st.write("Interview ended by candidate.")
+                st.rerun()
+            else:
+                # Store the Q&A pair
+                st.session_state.qa_pairs.append({
+                    "Question": st.session_state.current_question,
+                    "Answer": interviewee_response
+                })
+                st.session_state.qna_history.append(HumanMessage(content=interviewee_response))
+                
+                # Move to next question
+                st.session_state.counter += 1
+                st.session_state.current_question = None
+                
+                # Check if interview is complete
+                if st.session_state.counter >= st.session_state.question_limit:
+                    st.session_state.interview_completed = True
+                    st.session_state.end_time = datetime.now()
+                
+                # Force rerun to continue interview
+                st.rerun()
 
-            st.rerun()
+# Show completion message if interview is done
+if st.session_state.interview_completed:
+    time_taken = st.session_state.end_time - st.session_state.start_time
+    st.subheader("Interview Summary")
+    st.write(f"Total Questions Answered: {st.session_state.counter}")
+    st.write(f"Time Taken: {time_taken}")
 
 if "end_time" not in st.session_state:
     st.session_state.end_time = None
@@ -352,7 +369,7 @@ if st.session_state.interview_completed and st.session_state.end_time:
                 "skills": skills_str
             })
 
-            # Update interview status to COMPLETED (move this here)
+            # Update interview status to COMPLETED
             update_status_query = text("""
                 UPDATE AI_INTERVIEW_PLATFORM.interview_invitation
                 SET status = :status

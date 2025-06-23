@@ -43,3 +43,6 @@ uvicorn
 mysql-connector-python
 sqlalchemy
 pymysql
+
+# Bot Audio
+gTTS
