@@ -11,3 +11,6 @@ formatted_QA.txt
 venv
 myenv
 env
+
+# Bot-Audio
+*.mp3

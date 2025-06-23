@@ -1,12 +1,15 @@
-# Interviewer Side 20-06-2025, 17:02
+# Interviewer Side 23-06-2025, 14:46
 # Using streamlit side by side (will test on frontend instead of CLI)
-# Just using Track_Candidate for reference, fix it later
 
-import os
+import os, re
 import warnings
 import streamlit as st
 from dotenv import load_dotenv
-from datetime import datetime
+from datetime import datetime, timedelta
+
+# Bot Audio
+from gtts import gTTS
+import base64
 
 # LangChain & Gemini
 from langchain_google_genai import ChatGoogleGenerativeAI, GoogleGenerativeAIEmbeddings
@@ -19,7 +22,7 @@ from langchain_core.runnables import RunnableParallel, RunnablePassthrough, Runn
 from langchain_core.tools import StructuredTool
 from langchain.agents import initialize_agent, AgentType
 from langchain.memory import ConversationBufferMemory
-from typing import Optional
+from typing import Optional, Union
 from pydantic import BaseModel, Field, EmailStr
 from functools import lru_cache
 from sqlalchemy import create_engine, text
@@ -31,7 +34,11 @@ load_dotenv()
 
 # Streamlit for User Interface
 st.set_page_config(page_title="AI Interview Assistant", layout="centered")
-st.title("AI Interview Assistant")
+st.title("Jobma AI Interview Assistant")
+
+st.sidebar.header("Settings")
+use_voice = st.sidebar.checkbox("Enable Bot Voice", value=True)
+st.session_state.use_voice = use_voice
 
 # SQL Connection
 @st.cache_resource
@@ -60,6 +67,26 @@ if not engine:
     print("Database connection failed.")
     st.stop()
 
+# Bot-Audio
+def speak_text(text: str, lang="en") -> str:
+    """Convert text to speech and return HTML audio player"""
+    tts = gTTS(text, lang=lang)
+    tts.save("bot_response.mp3")
+
+    # Load and encode audio to base64
+    with open("bot_response.mp3", "rb") as f:
+        audio_bytes = f.read()
+        b64 = base64.b64encode(audio_bytes).decode()
+
+    # Return an HTML audio player
+    audio_html = f"""
+    <audio controls autoplay>
+        <source src="data:audio/mp3;base64,{b64}" type="audio/mp3">
+        Your browser does not support the audio element.
+    </audio>
+    """
+    return audio_html
+
 # Input Schema Using Pydantic
     # For Interview Scheduling
 class ScheduleInterviewInput(BaseModel):
@@ -70,7 +97,13 @@ class ScheduleInterviewInput(BaseModel):
 
     # For Tracking Candidate
 class TrackCandidateInput(BaseModel):
-    email:Optional[EmailStr] = None
+    name: Optional[str] = Field(None, description="Full name of the candidate")
+    email: Optional[str] = Field(None, description="Email address of the candidate")
+    role: Optional[str] = Field(None, description="Role applied for, e.g., 'frontend', 'backend'")
+    date_filter: Optional[str] = Field(
+        None,
+        description="Optional date filter: 'today', 'recent', or 'last_week'"
+    )
 
 # For Current Day
 current_month_year = datetime.now().strftime("%B %Y")
@@ -124,6 +157,7 @@ Possible Intents:
   - Asking how many interviews have been conducted or who has been interviewed.
 - **greet**: The user says hello, hi, good morning, or other greeting-like phrases.
 - **help**: The user is asking for help or support about using the Jobma platform.
+- **list_roles**: The user wants to view a list of roles interviews are scheduled for.
 - **bye**: The user says goodbye or ends the conversation.
 - **irrelevant**: The user input is unrelated to the Jobma platform or job interviews, such as asking about food, weather, sports, or general unrelated queries (e.g., "I want to make a pizza").
 
@@ -135,6 +169,25 @@ User Input:
 Intent:
 """,
     input_variables=['input']
+)
+
+# Parsing Prompt
+parsing_prompt = PromptTemplate(
+    template="""
+You are a helpful assistant that extracts filters to track a candidate's interview information.
+Based on the user's request, extract and return a JSON object with the following keys:
+
+- name: Candidate's name (if mentioned, like "Priya Sharma", "Dushyant Goyal")
+- email: Candidate's email (e.g., "abc@example.com", "SinghDeepanshu1233@gmail.com")
+- role: Role mentioned (like "backend", "frontend", "data analyst", "AI associate", etc.)
+- date_filter: One of: "today", "recent", "last_week", or null if not mentioned
+
+Only include relevant values. If a value is not mentioned, return null.
+
+Input: {input}
+Output:
+""",
+    input_variables=["input"]
 )
 
 # Document Loader
@@ -152,8 +205,6 @@ def extract_document(file_path):
             st.error("Unsupported file format. Please upload a PDF, DOCX or TXT file.")
 
         docs = loader.load()
-        st.write(f'Loading {file_path} ......')
-        st.write('Loading Successful')
         return docs
 
     except FileNotFoundError as fe:
@@ -335,44 +386,111 @@ def schedule_interview(role:str|dict, resume_path:str, question_limit:int, sende
 
     st.success(f"Interview scheduled for '{name}' for role: {role}")
 
-def track_candidate(email:str="") -> dict | list | str:
-    """ Track candidate(s) by email. If no email is provided, return all candidate records. """
-    with engine.begin() as conn:
+def track_candidate(name: Optional[str] = None, email: Optional[str] = None, role: Optional[str] = None, date_filter: Optional[str] = None) -> Union[list[dict], str]: 
+    "Flexible candidate tracker. Filter by name, email, role, and date."
+    try:
+        query = """
+            SELECT 
+                c.id AS candidate_id,
+                c.name AS name,
+                c.email AS email,
+                c.phone AS phone,
+
+                t.role AS role,
+                t.sender_email AS sender_email,
+                t.status AS status,
+                t.interview_scheduling_time AS interview_scheduling_time,
+
+                d.achieved_score AS achieved_score,
+                d.total_score AS total_score,
+                d.summary AS summary,
+                d.recommendation AS recommendation,
+                d.skills AS skills
+
+            FROM AI_INTERVIEW_PLATFORM.candidates c
+            LEFT JOIN AI_INTERVIEW_PLATFORM.interview_invitation t ON c.id = t.candidate_id
+            LEFT JOIN AI_INTERVIEW_PLATFORM.interview_details d ON t.id = d.candidate_id
+            WHERE 1=1
+        """
+        params = {}
+
+        if name:
+            query += " AND LOWER(c.name) LIKE :name"
+            params["name"] = f"%{name.strip().lower()}%"
+
         if email:
-            email = email.strip().lower()
-            result = conn.execute(
-                text("""
-                    Select * from AI_INTERVIEW_PLATFORM.interview_details id
-                    left join AI_INTERVIEW_PLATFORM.candidates c
-                    on id.candidate_id = c.id
-                    where c.email = :email
-                     
-                """),
-                {"email":email}
-            ).mappings().all()
-        else:
-            result = conn.execute(
-                text("""
-                    SELECT *
-                    FROM AI_INTERVIEW_PLATFORM.interview_details id
-                    LEFT JOIN AI_INTERVIEW_PLATFORM.candidates c
-                    ON id.candidate_id = c.id
-                """)
-            ).mappings().all()
+                query += " AND c.email = :email"
+                params["email"] = email.strip().lower()
+
+        if role:
+            query += " AND LOWER(t.role) LIKE :role"
+            params["role"] = f"%{role.lower()}%" 
+
+        if date_filter:
+            today = datetime.today()
+            if date_filter == "last_week":
+                start = today - timedelta(days=today.weekday() + 7)
+                end = start + timedelta(days=6)
+            elif date_filter == "recent":
+                start = today - timedelta(days=3)
+                end = today
+            elif date_filter == "today":
+                start = today.replace(hour=0, minute=0, second=0, microsecond=0)
+                end = today
+            else:
+                start = None
+
+            if start:
+                query += " AND t.interview_scheduling_time BETWEEN :start AND :end"
+                params["start"] = start
+                params["end"] = end
+        
+        query += " ORDER BY c.created_at DESC"
+
+        with engine.begin() as conn:
+            result = conn.execute(text(query), params).mappings().all()
 
         if not result:
-            st.error("No candidates found in the database")
-        
-    return [dict(row) for row in result]
+            return "No matching candidate records found."
+        return [dict(row) for row in result]
+    
+    except Exception as e:
+        return f"Error in tracking candidates: {str(e)}"
+    
+# To check available roles
+def list_all_scheduled_roles() -> Union[list[str], str]:
+    """Returns a list of all distinct roles for which interviews are scheduled."""
+    try:
+        query = """
+            SELECT DISTINCT role from AI_INTERVIEW_PLATFORM.interview_invitation
+            WHERE role is not NULL
+            Order by role
+        """
+        with engine.begin() as conn:
+            result = conn.execute(text(query)).scalars().all()
 
-# Tools
+        if not result:
+            return "No roles found with scheduled interviews."
+        return result
+    except Exception as e:
+        return f"Error fetching roles: {str(e)}"
+
+# Parsing part of Track Candidate
+def extract_filters(user_input:str) -> dict:
+    parsing_chain = parsing_prompt | llm | JsonOutputParser()
+    parsing_result = parsing_chain.invoke({"input": user_input})
+
+    return parsing_result
+
+
+#Tools
     # To track candidate's details
-track_candidate_tool = StructuredTool.from_function(
-    func=track_candidate,
-    name='track_candidate',
-    description="Track candidates. Provide email to get specific candidate details or leave blank to get a summary of all interviews.",
-    args_schema=TrackCandidateInput
-)
+# track_candidate_tool = StructuredTool.from_function(
+#     func=track_candidate,
+#     name='track_candidate',
+#     description="Track candidates. Use email, name, role, and date filter to narrow down results.",
+#     args_schema=TrackCandidateInput
+# )
 
 # Chatbot using Intent
 # Initialize session state for chat history
@@ -385,7 +503,7 @@ st.markdown("""
     .chat-container {
         display: flex;
         flex-direction: column;
-        height: calc(100vh - 200px);
+        height: calc(100vh - 160px);
         overflow-y: auto;
         padding: 10px;
         margin-bottom: 80px;
@@ -420,24 +538,22 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 def ask_ai():
-    st.title("Jobma Interview Assistant")
-
     # Initialize components
-    memory = ConversationBufferMemory(k=20, memory_key="chat_history", return_messages=True)
+    # memory = ConversationBufferMemory(k=20, memory_key="chat_history", return_messages=True)
     parser = StrOutputParser()
     rag_chain = create_rag_chain("formatted_QA.txt", prompt, parser)
     intent_chain = intent_prompt | llm | parser
 
-    tools = [track_candidate_tool]
-    agent = initialize_agent(
-        tools=tools,
-        llm=llm,
-        agent=AgentType.STRUCTURED_CHAT_ZERO_SHOT_REACT_DESCRIPTION,
-        verbose=False,
-        memory=memory,
-        handle_parsing_errors=True,
-        max_iterations=3
-    )
+    # tools = [track_candidate_tool]
+    # agent = initialize_agent(
+    #     tools=tools,
+    #     llm=llm,
+    #     agent=AgentType.STRUCTURED_CHAT_ZERO_SHOT_REACT_DESCRIPTION,
+    #     verbose=False,
+    #     memory=memory,
+    #     handle_parsing_errors=True,
+    #     max_iterations=3
+    # )
 
     # Chat container
     chat_container = st.container()
@@ -465,6 +581,8 @@ def ask_ai():
                 response = "Goodbye! Have a great day!"
                 st.session_state.chat_history.append({"sender": "user", "content": user_input})
                 st.session_state.chat_history.append({"sender": "ai", "content": response})
+                if st.session_state.get("use_voice"):
+                    st.markdown(speak_text(response), unsafe_allow_html=True)
 
             elif intent == "schedule_interview":
                 # Store the intent to show form in next render
@@ -472,30 +590,85 @@ def ask_ai():
                 st.session_state.chat_history.append({"sender": "user", "content": user_input})
                 st.session_state.chat_history.append({"sender": "ai", "content": "Let's schedule an interview. Please provide these details:"})
 
-            elif intent == "track_candidate":
-                agent_response = agent.invoke({'input': user_input})
-                response = agent_response['output']
+            elif intent == "list_roles":
                 st.session_state.chat_history.append({"sender": "user", "content": user_input})
-                st.session_state.chat_history.append({"sender": "ai", "content": response})
+
+                # Call the role-fetching function
+                response = list_all_scheduled_roles()
+
+                # Now use the response
+                if isinstance(response, str):
+                    # It's an error message or "no roles found"
+                    st.session_state.chat_history.append({"sender": "ai", "content": response})
+                    if st.session_state.get("use_voice"):
+                        st.markdown(speak_text(response), unsafe_allow_html=True)
+                else:
+                    # It's a list of roles
+                    role_list_str = "\n".join(f"- {r}" for r in response)
+                    summary = f"Interviews have been scheduled for the following roles:\n\n{role_list_str}"
+                    st.session_state.chat_history.append({"sender": "ai", "content": summary})
+                    if st.session_state.get("use_voice"):
+                        st.markdown(speak_text("Scheduled interview roles include: " + ", ".join(response)), unsafe_allow_html=True)
+
+            elif intent == "track_candidate":
+                filters = extract_filters(user_input)
+                response = track_candidate(
+                    name=filters.get("name"),
+                    email=filters.get("email"),
+                    role=filters.get("role"),
+                    date_filter=filters.get("date_filter")
+                )
+
+                st.session_state.chat_history.append({"sender": "user", "content": user_input})
+                if isinstance(response, str):
+                    st.session_state.chat_history.append({"sender": "ai", "content": response})
+                    if st.session_state.get("use_voice"):
+                        st.markdown(speak_text(response), unsafe_allow_html=True)
+                else:
+                    # Add an AI message summary
+                    st.session_state.chat_history.append({
+                        "sender": "ai",
+                        "content": f"Found {len(response)} matching candidate(s):"
+                    })
+                    if st.session_state.get("use_voice"):
+                        st.markdown(speak_text(f"Found {len(response)} matching candidates"), unsafe_allow_html=True)
+
+                    for row in response:
+                        with st.container():
+                            st.markdown("---")
+                            st.markdown(f"### {row.get('name', 'NA')}  \n `{row.get('email', 'NA')}`  | `{row.get('phone', 'NA')}`")
+                            st.markdown(f"**Role**: `{row.get('role', 'NA')}`  \n**Status**: `{row.get('status', 'NA')}`  \n**Scheduled At**: `{row.get('interview_scheduling_time', 'NA')}`")
+                            st.markdown(f"**Achieved Score**: `{row.get('achieved_score', 'NA')}` / `{row.get('total_score', 'NA')}`")
+                            st.markdown(f"**Recommendation**: `{row.get('recommendation', 'NA')}`  \n**Summary**: {row.get('summary', 'NA')}")
+                            st.markdown(f"**Skills Evaluated**: `{row.get('skills', 'NA')}`")
+
 
             elif intent == "greet":
                 response = llm.invoke(user_input).content
                 st.session_state.chat_history.append({"sender": "user", "content": user_input})
                 st.session_state.chat_history.append({"sender": "ai", "content": response})
+                if st.session_state.get("use_voice"):
+                    st.markdown(speak_text(response), unsafe_allow_html=True)
 
             elif intent == "help":
                 response = rag_chain.invoke(user_input)
                 st.session_state.chat_history.append({"sender": "user", "content": user_input})
                 st.session_state.chat_history.append({"sender": "ai", "content": response})
+                if st.session_state.get("use_voice"):
+                    st.markdown(speak_text(response), unsafe_allow_html=True)
 
             else:
                 response = "I'm sorry, I can only help with Jobma interview-related questions."
                 st.session_state.chat_history.append({"sender": "user", "content": user_input})
                 st.session_state.chat_history.append({"sender": "ai", "content": response})
+                if st.session_state.get("use_voice"):
+                    st.markdown(speak_text(response), unsafe_allow_html=True)
 
         except Exception as e:
             st.session_state.chat_history.append({"sender": "user", "content": user_input})
             st.session_state.chat_history.append({"sender": "ai", "content": f"Error: {str(e)}"})
+            if st.session_state.get("use_voice"):
+                st.markdown(speak_text(response), unsafe_allow_html=True)
 
     # Handle interview scheduling form
     if "current_intent" in st.session_state and st.session_state.current_intent == "schedule_interview":
