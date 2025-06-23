@@ -54,11 +54,12 @@ if not engine:
     st.stop()
 
 # LLM
-@lru_cache(maxsize=1)
-def get_llm():
-    return ChatGoogleGenerativeAI(model='gemini-2.0-flash', temperature=0)
+# @lru_cache(maxsize=1)
+# def get_llm():
+#     return ChatGoogleGenerativeAI(model='gemini-2.0-flash', temperature=0)
 
-llm = get_llm()
+# llm = get_llm()
+llm = ChatGoogleGenerativeAI(model='gemini-2.0-flash', temperature=0)
 
 # Adding a Authentication Check
 user_id = st.text_input("Enter your email ID")
