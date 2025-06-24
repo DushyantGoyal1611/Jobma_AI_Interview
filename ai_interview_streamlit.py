@@ -28,7 +28,7 @@ st.set_page_config(page_title="Candidate Portal", layout="centered")
 st.title("Candidate Interview Portal")
 
 # SQL Connection
-@st.cache_resource
+@st.cache_resource(ttl=3600)
 def create_connection():
     print("Creating Connection with DB")
     try:
@@ -41,7 +41,13 @@ def create_connection():
 
         # Credentials of mySQL connection
         connection_string = f"mysql+pymysql://{user}:{password}@{host}:{port}/{db}"
-        engine = create_engine(connection_string)
+        engine = create_engine(
+            connection_string,
+            pool_size=5,
+            max_overflow=10,
+            pool_timeout=30,
+            pool_recycle=3600
+        )
         print("Connection created Successfully")
         return engine
     except Exception as e:
@@ -54,12 +60,65 @@ if not engine:
     st.stop()
 
 # LLM
-# @lru_cache(maxsize=1)
-# def get_llm():
-#     return ChatGoogleGenerativeAI(model='gemini-2.0-flash', temperature=0)
+@st.cache_resource(ttl=3600)
+def get_llm():
+    try:
+        return ChatGoogleGenerativeAI(
+            model='gemini-2.0-flash',
+            temperature=0.5,
+            max_retries=3,
+            request_timeout=30
+        )
+    except Exception as e:
+        st.error(f"Failed to initialize LLM: {e}")
+        return None
 
-# llm = get_llm()
-llm = ChatGoogleGenerativeAI(model='gemini-2.0-flash', temperature=0)
+llm = get_llm()
+if not llm:
+    st.error("Critical error: Could not initialize LLM. Please try again later.")
+    st.stop()
+
+# llm = ChatGoogleGenerativeAI(model='gemini-2.0-flash', temperature=0)
+
+def initialize_session_state():
+    if "interview_started" not in st.session_state:
+        st.session_state.interview_started = False
+    if "counter" not in st.session_state:
+        st.session_state.counter = 0
+    if "qa_pairs" not in st.session_state:
+        st.session_state.qa_pairs = []
+    if "asked_questions" not in st.session_state:
+        st.session_state.asked_questions = set()
+    if "qna_history" not in st.session_state:
+        st.session_state.qna_history = [
+            SystemMessage(content="You are an AI Interviewer. Ask one question at a time based on candidate's resume. After the interviewee answers, ask the next one. Keep it conversational.")
+        ]
+    if "skills" not in st.session_state:
+        st.session_state.skills = []
+    if "role" not in st.session_state:
+        st.session_state.role = ""
+    if "experience" not in st.session_state:
+        st.session_state.experience = "0"
+    if "question_limit" not in st.session_state:
+        st.session_state.question_limit = 0
+    if "invitation_id" not in st.session_state:
+        st.session_state.invitation_id = 0
+    if "candidate_id" not in st.session_state:
+        st.session_state.candidate_id = 0
+    if "start_time" not in st.session_state:
+        st.session_state.start_time = datetime.now()
+    if "current_question" not in st.session_state:
+        st.session_state.current_question = None
+    if "end_time" not in st.session_state:
+        st.session_state.end_time = None
+    if "feedback_generated" not in st.session_state:
+        st.session_state.feedback_generated = False
+    if "interview_completed" not in st.session_state:
+        st.session_state.interview_completed = False
+    if "waiting_for_answer" not in st.session_state:
+        st.session_state.waiting_for_answer = False 
+
+initialize_session_state()
 
 # Adding a Authentication Check
 user_id = st.text_input("Enter your email ID")
@@ -135,75 +194,60 @@ if user_id:
 else:
     st.info("Please enter your email to proceed.")
 
-
-def initialize_session_state():
-    if "interview_started" not in st.session_state:
-        st.session_state.interview_started = False
-    if "counter" not in st.session_state:
-        st.session_state.counter = 0
-    if "qa_pairs" not in st.session_state:
-        st.session_state.qa_pairs = []
-    if "asked_questions" not in st.session_state:
-        st.session_state.asked_questions = set()
-    if "qna_history" not in st.session_state:
-        st.session_state.qna_history = [
-            SystemMessage(content="You are an AI Interviewer. Ask one question at a time based on candidate's resume. After the interviewee answers, ask the next one. Keep it conversational.")
-        ]
-    if "skills" not in st.session_state:
-        st.session_state.skills = []
-    if "role" not in st.session_state:
-        st.session_state.role = ""
-    if "experience" not in st.session_state:
-        st.session_state.experience = "0"
-    if "question_limit" not in st.session_state:
-        st.session_state.question_limit = 0
-    if "invitation_id" not in st.session_state:
-        st.session_state.invitation_id = 0
-    if "candidate_id" not in st.session_state:
-        st.session_state.candidate_id = 0
-    if "start_time" not in st.session_state:
-        st.session_state.start_time = datetime.now()
-    if "current_question" not in st.session_state:
-        st.session_state.current_question = None
-    if "end_time" not in st.session_state:
-        st.session_state.end_time = None
-    if "feedback_generated" not in st.session_state:
-        st.session_state.feedback_generated = False
-    if "interview_completed" not in st.session_state:
-        st.session_state.interview_completed = False
-    if "waiting_for_answer" not in st.session_state:
-        st.session_state.waiting_for_answer = False 
-
-initialize_session_state()
-
 # Role-based Question-Generation
-def generate_next_question(experience, target_role, max_retries=10):
-    for _ in range(max_retries):
-        question_prompt = f"""
-            You are an AI Interviewer interviewing a candidate for the role of "{target_role}".
-            The Candidate has {experience} years of experience.
+def generate_next_question(experience, target_role, max_retries=3):
+    # question_prompt = f"""
+    #         You are an AI Interviewer interviewing a candidate for the role of "{target_role}".
+    #         The Candidate has {experience} years of experience.
 
-            Generate one interview question that is:
-            - Relevant and appropriate for the role: "{target_role}".
-            - Calibrated to the candidate’s experience level:
-                - 0 to 2 years → basic to intermediate level.
-                - 2 to 6 years → intermediate to advanced level.
-                - More than 6 years → advanced level.
-            - You may include technical, situational, or behavioural elements as appropriate to the role.
+    #         Generate one interview question that is:
+    #         - Relevant and appropriate for the role: "{target_role}".
+    #         - Calibrated to the candidate’s experience level:
+    #             - 0 to 2 years → basic to intermediate level.
+    #             - 2 to 6 years → intermediate to advanced level.
+    #             - More than 6 years → advanced level.
+    #         - You may include technical, situational, or behavioural elements as appropriate to the role.
 
-            Only output the interview question. Do not include explanations or extra text.
-        """
+    #         Only output the interview question. Do not include explanations or extra text.
+    #     """
 
+    question_prompt = f"""
+        You are an AI Interviewer conducting a structured interview for the role of "{target_role}".
+
+        Candidate Profile:
+        - Experience: {experience} years
+        - Question number: {st.session_state.counter + 1}
+
+        Instructions:
+        - Generate one unique and relevant interview question tailored to the candidate’s experience and the role.
+        - Use a mix of technical, behavioral, and situational styles if appropriate.
+        - Do not repeat previous questions or themes.
+        - Make sure the question is meaningful and precise.
+
+        Only output the interview question. No explanations or extra text.
+    """
+    
+    for attempt in range(max_retries):
         try:
             response = llm.invoke(question_prompt)
             question = response.content.strip() if hasattr(response, "content") else str(response)
-            if question and question not in st.session_state.asked_questions:
-                st.session_state.asked_questions.add(question)
-                return question
+            print(f"[Retry {attempt+1}] Question: {question}")
+            
+            # if question and question not in st.session_state.asked_questions:
+            #     st.session_state.asked_questions.add(question)
+            #     return question
+
+            if question in st.session_state.asked_questions:
+                continue  # try again
+
+            # Accept and store new question
+            st.session_state.asked_questions.add(question)
+            return question
         except Exception as e:
             st.error(f"Error generating question: {e}")
             continue
-    return "All unique questions have been exhausted."
+    # return "All unique questions have been exhausted."
+    return None
 
 # Extracts JSON safely from Gemini
 def extract_json(text):
@@ -223,7 +267,8 @@ if st.session_state.interview_started and not st.session_state.interview_complet
     # Generate question if none is current
     if st.session_state.current_question is None or st.session_state.current_question in st.session_state.asked_questions:
         question = generate_next_question(st.session_state.experience, st.session_state.role)
-        if question == "All unique questions have been exhausted.":
+        # if question == "All unique questions have been exhausted.":
+        if question is None:
             st.error("No more unique questions available.")
             st.session_state.interview_completed = True
             st.session_state.end_time = datetime.now()
@@ -358,8 +403,8 @@ if st.session_state.interview_completed and st.session_state.end_time:
         with engine.begin() as conn:
             # Insert interview details
             conn.execute(insert_query, {
-                "invitation_id": invitation_id,
-                "candidate_id": candidate_id, 
+                "invitation_id": st.session_state.invitation_id,
+                "candidate_id": st.session_state.candidate_id, 
                 "questions": questions_json,
                 "answers": answers_json,
                 "achieved_score": achieved_score,
@@ -379,7 +424,7 @@ if st.session_state.interview_completed and st.session_state.end_time:
 
             conn.execute(update_status_query, {
                 "status": "Completed",
-                "invitation_id": invitation_id
+                "invitation_id": st.session_state.invitation_id
             })
 
         st.success("Candidate's interview result saved to SQL database.")

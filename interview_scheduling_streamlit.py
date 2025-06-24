@@ -1,7 +1,7 @@
 # Interviewer Side 23-06-2025, 14:46
 # Using streamlit side by side (will test on frontend instead of CLI)
 
-import os, re
+import os
 import warnings
 import streamlit as st
 from dotenv import load_dotenv
@@ -22,9 +22,11 @@ from langchain_core.runnables import RunnableParallel, RunnablePassthrough, Runn
 from langchain_core.tools import StructuredTool
 from langchain.agents import initialize_agent, AgentType
 from langchain.memory import ConversationBufferMemory
-from typing import Optional, Union
+from typing import Optional, Union, Literal
 from pydantic import BaseModel, Field, EmailStr
 from functools import lru_cache
+
+# SQL
 from sqlalchemy import create_engine, text
 from urllib.parse import quote_plus
 
@@ -104,6 +106,7 @@ class TrackCandidateInput(BaseModel):
         None,
         description="Optional date filter: 'today', 'recent', or 'last_week'"
     )
+    status: Optional[Literal["Scheduled", "Completed"]] = None
 
 # For Current Day
 current_month_year = datetime.now().strftime("%B %Y")
@@ -155,6 +158,8 @@ Possible Intents:
   - Asking for a specific candidate's status using an email or name.
   - Requesting a summary, details or list of all candidates interviewed.
   - Asking how many interviews have been conducted or who has been interviewed.
+  - Asking for scheduled interviews (phrases like "show scheduled", "track scheduled", "upcoming interviews")
+  - Asking for completed interviews (phrases like "show completed", "past interviews")
 - **greet**: The user says hello, hi, good morning, or other greeting-like phrases.
 - **help**: The user is asking for help or support about using the Jobma platform.
 - **list_roles**: The user wants to view a list of roles interviews are scheduled for.
@@ -181,6 +186,11 @@ Based on the user's request, extract and return a JSON object with the following
 - email: Candidate's email (e.g., "abc@example.com", "SinghDeepanshu1233@gmail.com")
 - role: Role mentioned (like "backend", "frontend", "data analyst", "AI associate", etc.)
 - date_filter: One of: "today", "recent", "last_week", or null if not mentioned
+- status: "Scheduled" or "Completed" if mentioned (e.g., "show scheduled interviews" → "Scheduled")
+
+Special cases:
+- If user asks for "scheduled" or "upcoming" interviews, set status to "Scheduled"
+- If user asks for "completed" or "past" interviews, set status to "Completed"
 
 Only include relevant values. If a value is not mentioned, return null.
 
@@ -386,8 +396,79 @@ def schedule_interview(role:str|dict, resume_path:str, question_limit:int, sende
 
     st.success(f"Interview scheduled for '{name}' for role: {role}")
 
-def track_candidate(name: Optional[str] = None, email: Optional[str] = None, role: Optional[str] = None, date_filter: Optional[str] = None) -> Union[list[dict], str]: 
-    "Flexible candidate tracker. Filter by name, email, role, and date."
+# def track_candidate(name: Optional[str] = None, email: Optional[str] = None, role: Optional[str] = None, date_filter: Optional[str] = None) -> Union[list[dict], str]: 
+#     "Flexible candidate tracker. Filter by name, email, role, and date."
+#     try:
+#         query = """
+#             SELECT 
+#                 c.id AS candidate_id,
+#                 c.name AS name,
+#                 c.email AS email,
+#                 c.phone AS phone,
+
+#                 t.role AS role,
+#                 t.sender_email AS sender_email,
+#                 t.status AS status,
+#                 t.interview_scheduling_time AS interview_scheduling_time,
+
+#                 d.achieved_score AS achieved_score,
+#                 d.total_score AS total_score,
+#                 d.summary AS summary,
+#                 d.recommendation AS recommendation,
+#                 d.skills AS skills
+
+#             FROM AI_INTERVIEW_PLATFORM.candidates c
+#             LEFT JOIN AI_INTERVIEW_PLATFORM.interview_invitation t ON c.id = t.candidate_id
+#             LEFT JOIN AI_INTERVIEW_PLATFORM.interview_details d ON t.id = d.candidate_id
+#             WHERE 1=1
+#         """
+#         params = {}
+
+#         if name:
+#             query += " AND LOWER(c.name) LIKE :name"
+#             params["name"] = f"%{name.strip().lower()}%"
+
+#         if email:
+#                 query += " AND c.email = :email"
+#                 params["email"] = email.strip().lower()
+
+#         if role:
+#             query += " AND LOWER(t.role) LIKE :role"
+#             params["role"] = f"%{role.lower()}%" 
+
+#         if date_filter:
+#             today = datetime.today()
+#             if date_filter == "last_week":
+#                 start = today - timedelta(days=today.weekday() + 7)
+#                 end = start + timedelta(days=6)
+#             elif date_filter == "recent":
+#                 start = today - timedelta(days=3)
+#                 end = today
+#             elif date_filter == "today":
+#                 start = today.replace(hour=0, minute=0, second=0, microsecond=0)
+#                 end = today
+#             else:
+#                 start = None
+
+#             if start:
+#                 query += " AND t.interview_scheduling_time BETWEEN :start AND :end"
+#                 params["start"] = start
+#                 params["end"] = end
+        
+#         query += " ORDER BY c.created_at DESC"
+
+#         with engine.begin() as conn:
+#             result = conn.execute(text(query), params).mappings().all()
+
+#         if not result:
+#             return "No matching candidate records found."
+#         return [dict(row) for row in result]
+    
+#     except Exception as e:
+#         return f"Error in tracking candidates: {str(e)}"
+
+def track_candidate(filter: TrackCandidateInput) -> Union[list[dict], str]: 
+    """Flexible candidate tracker. Filter by name, email, role, date, and interview status."""
     try:
         query = """
             SELECT 
@@ -409,32 +490,36 @@ def track_candidate(name: Optional[str] = None, email: Optional[str] = None, rol
 
             FROM AI_INTERVIEW_PLATFORM.candidates c
             LEFT JOIN AI_INTERVIEW_PLATFORM.interview_invitation t ON c.id = t.candidate_id
-            LEFT JOIN AI_INTERVIEW_PLATFORM.interview_details d ON t.id = d.candidate_id
+            LEFT JOIN AI_INTERVIEW_PLATFORM.interview_details d ON t.id = d.invitation_id
             WHERE 1=1
         """
         params = {}
 
-        if name:
+        if filter.name:
             query += " AND LOWER(c.name) LIKE :name"
-            params["name"] = f"%{name.strip().lower()}%"
+            params["name"] = f"%{filter.name.strip().lower()}%"
 
-        if email:
+        if filter.email:
                 query += " AND c.email = :email"
-                params["email"] = email.strip().lower()
+                params["email"] = filter.email.strip().lower()
 
-        if role:
+        if filter.role:
             query += " AND LOWER(t.role) LIKE :role"
-            params["role"] = f"%{role.lower()}%" 
+            params["role"] = f"%{filter.role.lower()}%" 
 
-        if date_filter:
+        if filter.status:
+            query += " AND LOWER(t.status) = :status"
+            params["status"] = filter.status.lower()
+
+        if filter.date_filter:
             today = datetime.today()
-            if date_filter == "last_week":
+            if filter.date_filter == "last_week":
                 start = today - timedelta(days=today.weekday() + 7)
                 end = start + timedelta(days=6)
-            elif date_filter == "recent":
+            elif filter.date_filter == "recent":
                 start = today - timedelta(days=3)
                 end = today
-            elif date_filter == "today":
+            elif filter.date_filter == "today":
                 start = today.replace(hour=0, minute=0, second=0, microsecond=0)
                 end = today
             else:
@@ -612,12 +697,8 @@ def ask_ai():
 
             elif intent == "track_candidate":
                 filters = extract_filters(user_input)
-                response = track_candidate(
-                    name=filters.get("name"),
-                    email=filters.get("email"),
-                    role=filters.get("role"),
-                    date_filter=filters.get("date_filter")
-                )
+                filter_model = TrackCandidateInput(**filters)
+                response = track_candidate(filter_model)
 
                 st.session_state.chat_history.append({"sender": "user", "content": user_input})
                 if isinstance(response, str):
