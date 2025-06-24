@@ -1,61 +1,8 @@
-def track_candidate(email: str = "") -> Union[list[dict], str]:
-    """
-    Track candidate(s) by email. If no email is provided, return all candidate records.
-    
-    Args:
-        email (str): Candidate email address (optional)
-    
-    Returns:
-        list[dict] | str: List of candidate details or a message if none found
-    """
-    try:
-        with engine.begin() as conn:
-            query = """
-                SELECT 
-                    c.id AS candidate_id,
-                    c.name AS name,
-                    c.email AS email,
-                    c.education AS education,
-                    c.experience AS experience,
-                    c.phone AS phone,
-                    c.created_at AS created_at,
-
-                    t.role AS role,
-                    t.question_limit AS question_limit,
-                    t.sender_email AS sender_email,
-                    t.status AS status,
-                    t.interview_scheduling_time AS interview_scheduling_time,
-
-                    d.questions AS questions,
-                    d.answers AS answers,
-                    d.achieved_score AS achieved_score,
-                    d.total_score AS total_score,
-                    d.feedback AS feedback,
-                    d.summary AS summary,
-                    d.recommendation AS recommendation,
-                    d.skills AS skills
-
-                FROM AI_INTERVIEW_PLATFORM.candidates c
-                LEFT JOIN AI_INTERVIEW_PLATFORM.interview_invitation t
-                    ON c.id = t.candidate_id
-                LEFT JOIN AI_INTERVIEW_PLATFORM.interview_details d
-                    ON t.id = d.candidate_id
-                WHERE (:email IS NULL OR c.email = :email)
-                ORDER BY c.created_at DESC
-            """
-
-            # Normalize email if provided
-            clean_email = email.strip().lower() if email else None
-
-            result = conn.execute(text(query), {"email": clean_email}).mappings().all()
-
-        if not result:
-            return f"No candidate{'s' if not email else ''} found{f' with email {email}' if email else ''}."
-
-        return [dict(row) for row in result]
-
-    except Exception as e:
-        return f"Error while tracking candidate(s): {str(e)}"
+# from langchain_core.tools import StructuredTool
+# from langchain.agents import initialize_agent, AgentType
+# from langchain.memory import ConversationBufferMemory
+# from typing import Optional, Union, Literal
+# from pydantic import BaseModel, Field, EmailStr
     
 
 
@@ -67,22 +14,15 @@ def track_candidate(email: str = "") -> Union[list[dict], str]:
 #                 c.id AS candidate_id,
 #                 c.name AS name,
 #                 c.email AS email,
-#                 c.education AS education,
-#                 c.experience AS experience,
 #                 c.phone AS phone,
-#                 c.created_at AS created_at,
 
 #                 t.role AS role,
-#                 t.question_limit AS question_limit,
 #                 t.sender_email AS sender_email,
 #                 t.status AS status,
 #                 t.interview_scheduling_time AS interview_scheduling_time,
 
-#                 d.questions AS questions,
-#                 d.answers AS answers,
 #                 d.achieved_score AS achieved_score,
 #                 d.total_score AS total_score,
-#                 d.feedback AS feedback,
 #                 d.summary AS summary,
 #                 d.recommendation AS recommendation,
 #                 d.skills AS skills
@@ -136,3 +76,25 @@ def track_candidate(email: str = "") -> Union[list[dict], str]:
     
 #     except Exception as e:
 #         return f"Error in tracking candidates: {str(e)}"
+
+
+
+
+# Memory
+# memory = ConversationBufferMemory(k=20, memory_key="chat_history", return_messages=True)
+
+# Tools
+# tools = [track_candidate_tool]
+# agent = initialize_agent(
+#     tools=tools,
+#     llm=llm,
+#     agent=AgentType.STRUCTURED_CHAT_ZERO_SHOT_REACT_DESCRIPTION,
+#     verbose=False,
+#     memory=memory,
+#     handle_parsing_errors=True,
+#     max_iterations=3
+# )
+
+
+
+

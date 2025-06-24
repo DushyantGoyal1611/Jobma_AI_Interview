@@ -60,7 +60,7 @@ if not engine:
     st.stop()
 
 # LLM
-@st.cache_resource(ttl=3600)
+@lru_cache(maxsize=1)
 def get_llm():
     try:
         return ChatGoogleGenerativeAI(
@@ -77,8 +77,6 @@ llm = get_llm()
 if not llm:
     st.error("Critical error: Could not initialize LLM. Please try again later.")
     st.stop()
-
-# llm = ChatGoogleGenerativeAI(model='gemini-2.0-flash', temperature=0)
 
 def initialize_session_state():
     if "interview_started" not in st.session_state:

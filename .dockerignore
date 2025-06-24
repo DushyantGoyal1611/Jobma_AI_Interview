@@ -1,0 +1,37 @@
+# Python cache
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Virtual environments
+venv/
+env/
+myenv/
+
+# Environment variables
+.env
+
+# OS metadata
+.DS_Store
+Thumbs.db
+
+# Git
+.git
+.gitignore
+
+# Documents
+backup_code/
+*.pdf
+*.docx
+*.json
+
+# Audio files
+*.mp3
+
+# IDE configs (optional)
+.vscode/
+.idea/
+
+# DB files (if using SQLite locally)
+*.db
+*.sqlite3
