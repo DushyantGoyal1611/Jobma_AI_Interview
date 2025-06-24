@@ -1,4 +1,4 @@
-# Interviewer Side 23-06-2025, 14:46
+# Interviewer Side 24-06-2025, 12:46
 # Using streamlit side by side (will test on frontend instead of CLI)
 
 import os
@@ -19,9 +19,6 @@ from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_core.prompts import PromptTemplate
 from langchain_core.output_parsers import JsonOutputParser, StrOutputParser
 from langchain_core.runnables import RunnableParallel, RunnablePassthrough, RunnableLambda
-from langchain_core.tools import StructuredTool
-from langchain.agents import initialize_agent, AgentType
-from langchain.memory import ConversationBufferMemory
 from typing import Optional, Union, Literal
 from pydantic import BaseModel, Field, EmailStr
 from functools import lru_cache
@@ -95,12 +92,12 @@ class ScheduleInterviewInput(BaseModel):
     role:str = Field(description="Target Job Role")
     resume_path:str = Field(description="Path to resume file (PDF/DOCX/TXT)")
     question_limit:int = Field(description="Number of interview questions to generate")
-    sender_email:str = Field(description="Sender's email address")
+    sender_email:EmailStr = Field(description="Sender's email address")
 
     # For Tracking Candidate
 class TrackCandidateInput(BaseModel):
     name: Optional[str] = Field(None, description="Full name of the candidate")
-    email: Optional[str] = Field(None, description="Email address of the candidate")
+    email: Optional[EmailStr] = Field(None, description="Email address of the candidate")
     role: Optional[str] = Field(None, description="Role applied for, e.g., 'frontend', 'backend'")
     date_filter: Optional[str] = Field(
         None,
@@ -396,77 +393,7 @@ def schedule_interview(role:str|dict, resume_path:str, question_limit:int, sende
 
     st.success(f"Interview scheduled for '{name}' for role: {role}")
 
-# def track_candidate(name: Optional[str] = None, email: Optional[str] = None, role: Optional[str] = None, date_filter: Optional[str] = None) -> Union[list[dict], str]: 
-#     "Flexible candidate tracker. Filter by name, email, role, and date."
-#     try:
-#         query = """
-#             SELECT 
-#                 c.id AS candidate_id,
-#                 c.name AS name,
-#                 c.email AS email,
-#                 c.phone AS phone,
-
-#                 t.role AS role,
-#                 t.sender_email AS sender_email,
-#                 t.status AS status,
-#                 t.interview_scheduling_time AS interview_scheduling_time,
-
-#                 d.achieved_score AS achieved_score,
-#                 d.total_score AS total_score,
-#                 d.summary AS summary,
-#                 d.recommendation AS recommendation,
-#                 d.skills AS skills
-
-#             FROM AI_INTERVIEW_PLATFORM.candidates c
-#             LEFT JOIN AI_INTERVIEW_PLATFORM.interview_invitation t ON c.id = t.candidate_id
-#             LEFT JOIN AI_INTERVIEW_PLATFORM.interview_details d ON t.id = d.candidate_id
-#             WHERE 1=1
-#         """
-#         params = {}
-
-#         if name:
-#             query += " AND LOWER(c.name) LIKE :name"
-#             params["name"] = f"%{name.strip().lower()}%"
-
-#         if email:
-#                 query += " AND c.email = :email"
-#                 params["email"] = email.strip().lower()
-
-#         if role:
-#             query += " AND LOWER(t.role) LIKE :role"
-#             params["role"] = f"%{role.lower()}%" 
-
-#         if date_filter:
-#             today = datetime.today()
-#             if date_filter == "last_week":
-#                 start = today - timedelta(days=today.weekday() + 7)
-#                 end = start + timedelta(days=6)
-#             elif date_filter == "recent":
-#                 start = today - timedelta(days=3)
-#                 end = today
-#             elif date_filter == "today":
-#                 start = today.replace(hour=0, minute=0, second=0, microsecond=0)
-#                 end = today
-#             else:
-#                 start = None
-
-#             if start:
-#                 query += " AND t.interview_scheduling_time BETWEEN :start AND :end"
-#                 params["start"] = start
-#                 params["end"] = end
-        
-#         query += " ORDER BY c.created_at DESC"
-
-#         with engine.begin() as conn:
-#             result = conn.execute(text(query), params).mappings().all()
-
-#         if not result:
-#             return "No matching candidate records found."
-#         return [dict(row) for row in result]
-    
-#     except Exception as e:
-#         return f"Error in tracking candidates: {str(e)}"
-
+# Function to Track Candidate's Details
 def track_candidate(filter: TrackCandidateInput) -> Union[list[dict], str]: 
     """Flexible candidate tracker. Filter by name, email, role, date, and interview status."""
     try:
@@ -567,16 +494,6 @@ def extract_filters(user_input:str) -> dict:
 
     return parsing_result
 
-
-#Tools
-    # To track candidate's details
-# track_candidate_tool = StructuredTool.from_function(
-#     func=track_candidate,
-#     name='track_candidate',
-#     description="Track candidates. Use email, name, role, and date filter to narrow down results.",
-#     args_schema=TrackCandidateInput
-# )
-
 # Chatbot using Intent
 # Initialize session state for chat history
 if 'chat_history' not in st.session_state:
@@ -623,22 +540,9 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 def ask_ai():
-    # Initialize components
-    # memory = ConversationBufferMemory(k=20, memory_key="chat_history", return_messages=True)
     parser = StrOutputParser()
     rag_chain = create_rag_chain("formatted_QA.txt", prompt, parser)
     intent_chain = intent_prompt | llm | parser
-
-    # tools = [track_candidate_tool]
-    # agent = initialize_agent(
-    #     tools=tools,
-    #     llm=llm,
-    #     agent=AgentType.STRUCTURED_CHAT_ZERO_SHOT_REACT_DESCRIPTION,
-    #     verbose=False,
-    #     memory=memory,
-    #     handle_parsing_errors=True,
-    #     max_iterations=3
-    # )
 
     # Chat container
     chat_container = st.container()
