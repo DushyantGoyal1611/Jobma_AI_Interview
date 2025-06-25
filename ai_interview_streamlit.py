@@ -1,6 +1,5 @@
 # Candidate Side 20-06-2025, 14:14
 # Using streamlit side by side (will test on frontend instead of CLI)
-# Completed the Candidate Side's necessary changes 
 
 import os
 import re
