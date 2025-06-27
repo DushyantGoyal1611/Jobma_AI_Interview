@@ -1,14 +1,13 @@
+# Interviewer's Side
 # This file is created just for practicing building APIs
-# Created on 26-06-2025 at 18:22
+# Modified on 27-06-2025 at 10:02
 
 import os
 import warnings
 from dotenv import load_dotenv
+from functools import lru_cache
 from datetime import datetime, timedelta
-
-# Bot Audio
-from gtts import gTTS
-import base64
+from typing import Optional, Union, Literal
 
 # LangChain & Gemini
 from langchain_google_genai import ChatGoogleGenerativeAI, GoogleGenerativeAIEmbeddings
@@ -18,9 +17,10 @@ from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_core.prompts import PromptTemplate
 from langchain_core.output_parsers import JsonOutputParser, StrOutputParser
 from langchain_core.runnables import RunnableParallel, RunnablePassthrough, RunnableLambda
-from typing import Optional, Union, Literal
+from langchain.agents import initialize_agent, AgentType
+from langchain.memory import ConversationBufferMemory
+from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, Field, EmailStr
-from functools import lru_cache
 
 # SQL
 from sqlalchemy import create_engine, text
@@ -31,6 +31,7 @@ warnings.filterwarnings('ignore')
 load_dotenv()
 
 # SQL Connection
+@lru_cache(maxsize=1)
 def create_connection():
     print("Creating Connection with DB")
     try:
@@ -49,6 +50,12 @@ def create_connection():
     except Exception as e:
         print(f"Error creating connection with DB: {e}")
         return None
+    
+# Initialize only once
+engine = create_connection()
+if not engine:
+    print("Database connection failed.")
+    exit()
 
 # Input Schema Using Pydantic
     # For Interview Scheduling
@@ -221,3 +228,332 @@ def create_rag_chain(doc, prompt, parser, score_threshold=1.0, resume_text=False
     if resume_text:
         return main_chain, "\n\n".join([doc.page_content for doc in docs])
     return main_chain
+
+# Skills and Experience fetching prompt and JSON Parser
+resume_parser = JsonOutputParser()
+
+resume_prompt = PromptTemplate(
+    template="""
+You are an AI Resume Analyzer. Analyze the resume text below and extract **only** information relevant to the given job role.
+
+Your output **must** be in the following JSON format:
+{format_instruction}
+
+**Instructions:**
+1. **Name**:
+   - Extract the candidate's full name from the **first few lines** of the resume.
+   - It is usually the **first large bold text** or line that is **not an address, email, or phone number**.
+   - Exclude words like "Resume", "Curriculum Vitae", "AI", or job titles.
+   - If the name appears to be broken across lines, reconstruct it (e.g., "Abhis" and "hek" should be "Abhishek").
+   - If no clear name is found, return: `"Name": "NA"`.
+
+2. **Skills**:
+   - Extract technical and soft skills relevant to the **target role**.
+   - Exclude generic or irrelevant skills (e.g., MS Word, Internet Browsing).
+   - If **no skills are relevant**, return an empty list: `"Skills": []`.
+
+3. **Experience**:
+   - Calculate the **cumulative time spent at each company** to get total professional experience.
+   - Include only non-overlapping, clearly dated experiences (internships, jobs).
+   - If a role ends in "Present" or "Current", treat it as ending in **{current_month_year}**.
+   - Example: 
+     - Google: Jan 2023 - Mar 2023 = 2 months  
+     - Jobma: Feb 2025 - May 2025 = 3 months  
+     - Total: 5 months = `"Experience": "0.42 years"`
+   - Round the final answer to **2 decimal places**.
+   - If durations are missing or unclear, return: `"Experience": "NA"`.
+
+4. Fetch email id from the document
+   - Extract the first valid email address ending with `@gmail.com` from the text.
+   - If not found, return `"Email": "NA"`.
+
+5. **Phone**:
+   - Extract the first 10-digit Indian mobile number (starting with 6-9) from the resume.
+   - You can allow formats with or without `+91`, spaces, or dashes.
+   - Examples: `9876543210`, `+91-9876543210`, `+91 98765 43210`.
+   - If no valid number is found, return `"Phone": "NA"`.
+
+6. **Education**:
+   - Extract **highest qualification** (e.g., B.Tech, M.Tech, MCA, MBA, PhD).
+   - Include the **degree name**, **specialization** (if available), and **university/institute name**.
+   - Example: `"Education": "MCA in Computer Applications from VIPS, GGSIPU"`
+   - If not found, return `"Education": "NA"`.
+---
+
+**Target Role**: {role}
+
+**Resume Text**:
+{context}
+""",
+    input_variables=["context", "role"],
+    partial_variables={
+        "format_instruction": resume_parser.get_format_instructions(),
+        "current_month_year": current_month_year
+    }
+)
+
+# Function to Schedule Interview
+def schedule_interview(role:str|dict, resume_path:str, question_limit:int, sender_email:str) -> str:
+    if not isinstance(resume_path, str):
+        raise ValueError("resume_path must be a valid string")
+    
+    if not os.path.isfile(resume_path):
+        raise FileNotFoundError(f"Resume file not found at path: {resume_path}")
+    
+    # Create the chain with JsonOutputParser instead of StrOutputParser
+    resume_chain = resume_prompt | llm | resume_parser
+    resume_result = resume_chain.invoke({'context': extract_document(resume_path), 'role': role})
+
+    name = resume_result.get("Name", "NA")
+    email = resume_result.get("Email", "NA")
+    experience = resume_result.get("Experience", "NA")
+    skills = ", ".join(resume_result.get("Skills", []))
+    education = resume_result.get("Education", "NA")
+    phone = resume_result.get("Phone", "NA")
+    current_time = datetime.now()
+
+    with engine.begin() as conn:  # Ensures transactional safety: commits on success, rolls back on error.
+        # 1. Check if candidate exists
+        result = conn.execute(text(
+            "Select id from AI_INTERVIEW_PLATFORM.candidates Where email = :email"
+        ),
+        {"email": email}
+        ).fetchone()
+
+        if result:
+            candidate_id = result[0]
+        else:
+            # 2. Insert candidate
+            insert_candidate = text("""
+                Insert into AI_INTERVIEW_PLATFORM.candidates (name, email, skills, education, experience, resume_path, phone, created_at)
+                Values (:name, :email, :skills, :education, :experience, :resume_path, :phone, :created_at)
+            """)
+            conn.execute(insert_candidate, {
+                "name": name,
+                "email": email,
+                "skills": skills,
+                "education": education,
+                "experience": experience,
+                "resume_path": resume_path,
+                "phone": phone,
+                "created_at": current_time
+            })
+
+            # Get new candidate_id
+                # Scalar fetches the first column of the first row of the result set, or returns None if there are no rows.
+            candidate_id = conn.execute(
+                text("SELECT id FROM AI_INTERVIEW_PLATFORM.candidates WHERE email = :email"),
+                {"email": email}
+            ).scalar()
+
+        # 3. Insert interview_invitation
+        insert_invite = text("""
+            INSERT INTO AI_INTERVIEW_PLATFORM.interview_invitation 
+                (candidate_id, role, question_limit, sender_email, status, created_at, interview_scheduling_time)
+            VALUES 
+                (:candidate_id, :role, :question_limit, :sender_email, :status, :created_at, :interview_scheduling_time)
+            """)
+        
+        conn.execute(insert_invite, {
+            "candidate_id": candidate_id,
+            "role": role,
+            "question_limit": question_limit,
+            "sender_email": sender_email,
+            "status": "Scheduled",
+            "created_at": current_time,
+            "interview_scheduling_time": current_time
+        })
+
+    return f"Interview scheduled for '{name}' for role: {role}"
+
+# Function to Track Candidate's Details
+def track_candidate(filter: TrackCandidateInput) -> Union[list[dict], str]: 
+    """Flexible candidate tracker. Filter by name, email, role, date, and interview status."""
+    try:
+        query = """
+            SELECT 
+                c.id AS candidate_id,
+                c.name AS name,
+                c.email AS email,
+                c.phone AS phone,
+
+                t.role AS role,
+                t.sender_email AS sender_email,
+                t.status AS status,
+                t.interview_scheduling_time AS interview_scheduling_time,
+
+                d.achieved_score AS achieved_score,
+                d.total_score AS total_score,
+                d.summary AS summary,
+                d.recommendation AS recommendation,
+                d.skills AS skills
+
+            FROM AI_INTERVIEW_PLATFORM.candidates c
+            LEFT JOIN AI_INTERVIEW_PLATFORM.interview_invitation t ON c.id = t.candidate_id
+            LEFT JOIN AI_INTERVIEW_PLATFORM.interview_details d ON t.id = d.invitation_id
+            WHERE 1=1
+        """
+        params = {}
+
+        if filter.name:
+            query += " AND LOWER(c.name) LIKE :name"
+            params["name"] = f"%{filter.name.strip().lower()}%"
+
+        if filter.email:
+                query += " AND c.email = :email"
+                params["email"] = filter.email.strip().lower()
+
+        if filter.role:
+            query += " AND LOWER(t.role) LIKE :role"
+            params["role"] = f"%{filter.role.lower()}%" 
+
+        if filter.status:
+            query += " AND LOWER(t.status) = :status"
+            params["status"] = filter.status.lower()
+
+        if filter.date_filter:
+            today = datetime.today()
+            if filter.date_filter == "last_week":
+                start = today - timedelta(days=today.weekday() + 7)
+                end = start + timedelta(days=6)
+            elif filter.date_filter == "recent":
+                start = today - timedelta(days=3)
+                end = today
+            elif filter.date_filter == "today":
+                start = today.replace(hour=0, minute=0, second=0, microsecond=0)
+                end = today
+            else:
+                start = None
+
+            if start:
+                query += " AND t.interview_scheduling_time BETWEEN :start AND :end"
+                params["start"] = start
+                params["end"] = end
+        
+        query += " ORDER BY c.created_at DESC"
+
+        with engine.begin() as conn:
+            result = conn.execute(text(query), params).mappings().all()
+
+        if not result:
+            return "No matching candidate records found."
+        return [dict(row) for row in result]
+    
+    except Exception as e:
+        return f"Error in tracking candidates: {str(e)}"
+    
+# To check available roles
+def list_all_scheduled_roles() -> Union[list[str], str]:
+    """Returns a list of all distinct roles for which interviews are scheduled."""
+    try:
+        query = """
+            SELECT DISTINCT role from AI_INTERVIEW_PLATFORM.interview_invitation
+            WHERE role is not NULL
+            Order by role
+        """
+        with engine.begin() as conn:
+            result = conn.execute(text(query)).scalars().all()
+
+        if not result:
+            return "No roles found with scheduled interviews."
+        return result
+    except Exception as e:
+        return f"Error fetching roles: {str(e)}"
+
+# Parsing part of Track Candidate
+def extract_filters(user_input:str) -> dict:
+    parsing_chain = parsing_prompt | llm | JsonOutputParser()
+    parsing_result = parsing_chain.invoke({"input": user_input})
+
+    return parsing_result
+
+# Tools   
+interview_tool = StructuredTool.from_function(
+    func=schedule_interview,
+    name='schedule_interview',
+    description="Extracts resume information and schedules interview. Input should be a dictionary with keys: role, resume_path, question_limit, sender_email",
+    args_schema=ScheduleInterviewInput
+)   
+
+# track_candidate_tool = StructuredTool.from_function(
+#     func=track_candidate,
+#     name='track_candidate',
+#     description="Track candidates. Provide email to get specific candidate details or leave blank to get a summary of all interviews.",
+#     args_schema=TrackCandidateInput
+# )
+
+status_tool = StructuredTool.from_function(
+    func=list_all_scheduled_roles,
+    name="list_all_scheduled_roles",
+    description="Returns a list of all distinct roles for which interviews are scheduled."
+)
+
+# Chatbot using Intent
+def ask_ai():
+    memory = ConversationBufferMemory(k=20, memory_key="chat_history", return_messages=True)
+    parser = StrOutputParser()
+    rag_chain = create_rag_chain("formatted_QA.txt", prompt, parser)
+    intent_chain = intent_prompt | llm | parser
+
+    tools = [interview_tool, status_tool]
+    # Agent
+    agent = initialize_agent(
+        tools=tools,
+        llm=llm,
+        agent=AgentType.STRUCTURED_CHAT_ZERO_SHOT_REACT_DESCRIPTION,
+        verbose=False,
+        memory=memory,
+        handle_parsing_errors=True,
+        max_iterations=3
+    )
+
+    while True:
+        try:
+            user_input = input("You: ")
+
+            response = intent_chain.invoke(user_input)
+
+            if response == 'bye':
+                print(f"{response}: Exiting Chat \nGoodbye!")
+                break
+            elif response == 'schedule_interview':
+                try:
+                    print("AI: Let's schedule an interview. I'll need some details:")
+                    role = input("Enter Target role: ").strip()
+                    resume_path = input("Enter resume file path: ").strip()
+                    if not os.path.exists(resume_path):
+                        print(f"Error: File not found at {resume_path}")
+                        continue
+                    question_limit = int(input("How many questions to generate? "))
+                    sender_email = input("Enter sender's email: ").strip()
+
+                    response = agent.run(
+                        f"Schedule an interview for {role} using resume at {resume_path}. "
+                        f"Generate {question_limit} questions and send confirmation to {sender_email}."
+                    )
+                    print("AI (Agent):", response)
+                except Exception as e:
+                    print("Error during Scheduling:", str(e))
+                continue
+            elif response == 'track_candidate':
+                filters = extract_filters(user_input)
+                track_result = track_candidate(TrackCandidateInput(**filters))
+                print(track_result)
+                continue
+            elif response == 'list_roles':
+                agent_response = agent.invoke({'input': user_input})
+                print(f"Agent({response}): {agent_response['output']}")
+                continue
+            elif response == 'greet':
+                greet_reponse = llm.invoke(user_input)
+                print(f"AI({response}):, {greet_reponse.content}")
+                continue
+            elif response == 'help':
+                rag_response = rag_chain.invoke(user_input)
+                print(f"Rag AI({response}): {rag_response}")
+            else:
+                print(f"{response}: Sorry! This Question is Irrelevant")
+        except Exception as e:
+            print(f"Error: {e}")
+
+ask_ai()
